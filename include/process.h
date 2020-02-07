@@ -268,7 +268,7 @@ class pipe_ostreambuf : public std::streambuf
         setg(end, end, end);
     }
 
-    ~pipe_ostreambuf() = default;
+    ~pipe_ostreambuf() override = default;
 
     int_type underflow() override
     {
@@ -361,7 +361,7 @@ class pipe_streambuf : public pipe_ostreambuf
      * Destroys the streambuf, which will flush any remaining content on
      * the output buffer.
      */
-    ~pipe_streambuf()
+    ~pipe_streambuf() override
     {
         flush();
     }
@@ -469,8 +469,12 @@ class process
 
     /**
      * Executes the process.
+     *
+     * This method calls child_post_fork_hook just after the return
+     * from fork() call in the child process.
      */
-    void exec()
+    template<typename Hook>
+    void exec(Hook && child_post_fork_hook)
     {
         if (pid_ != -1)
             throw exception{"process already started"};
@@ -485,6 +489,8 @@ class process
         }
         else if (pid == 0)
         {
+            child_post_fork_hook();
+
             err_pipe.close(pipe_t::read_end());
             pipe_buf_.stdin_pipe().close(pipe_t::write_end());
             pipe_buf_.stdout_pipe().close(pipe_t::read_end());
@@ -547,6 +553,14 @@ class process
                 err_pipe.close();
             }
         }
+    }
+
+    /**
+     * Executes the process.
+     */
+    void exec()
+    {
+       this->exec([]{});
     }
 
     /**
