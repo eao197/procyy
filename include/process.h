@@ -655,8 +655,11 @@ class process
     {
         if (!waited_)
         {
-            pipe_buf_.close(pipe_t::write_end());
-            err_buf_.close(pipe_t::write_end());
+            // Because wait() can be called from the destructor it
+            // shouldn't throw.
+            // close() method can throw an exception if pipe is broken.
+            try{ pipe_buf_.close(pipe_t::write_end()); } catch(...) {}
+            try{ err_buf_.close(pipe_t::write_end()); } catch(...) {}
             waitpid(pid_, &status_, 0);
             pid_ = -1;
             waited_ = true;
