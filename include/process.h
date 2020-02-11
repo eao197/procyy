@@ -363,7 +363,7 @@ class pipe_streambuf : public pipe_ostreambuf
      */
     ~pipe_streambuf() override
     {
-        flush();
+        try{ flush(); } catch(...) {} // Exceptions shouldn't go out.
     }
 
     int_type overflow(int_type ch) override
