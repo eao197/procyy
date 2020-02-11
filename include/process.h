@@ -443,6 +443,13 @@ class process
         // nothing
     }
 
+     /**
+      * Get the application name.
+      */
+     const std::string & application() const noexcept {
+         return args_[0];
+     }
+
     /*
      * Adds an argument to the argument-list
      */
