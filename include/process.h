@@ -32,21 +32,41 @@
 #include <system_error>
 #include <vector>
 
-#ifndef PROCXX_HAS_PIPE2
-#define PROCXX_HAS_PIPE2 1
-#endif
-
 namespace procxx
 {
+
+namespace details
+{
+
+// See https://stackoverflow.com/questions/13950938/construct-stderror-code-from-errno-on-posix-and-getlasterror-on-windows
+inline std::error_code
+error_code_from_errno(int errno_v)
+{
+    return std::make_error_code(static_cast<std::errc>(errno_v));
+}
+
+} /* namespace details */
+
+/**
+ * A special indicator for performing an operation without
+ * throwing an exception.
+ */
+struct nothrow {};
 
 /**
  * Represents a UNIX pipe between processes.
  */
 class pipe_t
 {
-  public:
-    static constexpr unsigned int READ_END = 0;
-    static constexpr unsigned int WRITE_END = 1;
+public:
+    enum class pipe_end_enum : unsigned int
+    {
+        read = 0u,
+        write = 1u
+    };
+
+    static constexpr pipe_end_enum READ_END = pipe_end_enum::read;
+    static constexpr pipe_end_enum WRITE_END = pipe_end_enum::write;
 
     /**
      * Wrapper type that ensures sanity when dealing with operations on
@@ -54,47 +74,40 @@ class pipe_t
      */
     class pipe_end
     {
-      public:
+    public:
         /**
-         * Constructs a new object to represent an end of a pipe. Ensures
-         * the end passed makes sense (e.g., is either the READ_END or the
-         * WRITE_END of the pipe).
+         * Constructs a new object to represent an end of a pipe.
          */
-        pipe_end(unsigned int end)
-        {
-            if (end != READ_END && end != WRITE_END)
-                throw exception{"invalid pipe end"};
-            end_ = end;
-        }
+        constexpr pipe_end(pipe_end_enum end) noexcept : end_{end} {}
 
         /**
          * pipe_ends are implicitly convertible to ints.
          */
-        operator unsigned int() const
+        constexpr operator unsigned int() const noexcept
         {
-            return end_;
+            return static_cast<unsigned int>(end_);
         }
 
-      private:
-        unsigned int end_;
+    private:
+        pipe_end_enum end_;
     };
 
     /**
      * Gets a pipe_end representing the read end of a pipe.
      */
-    static pipe_end read_end()
+    static constexpr pipe_end
+    read_end() noexcept
     {
-        static pipe_end read{READ_END};
-        return read;
+        return pipe_end{READ_END};
     }
 
     /**
      * Gets a pipe_end representing the write end of a pipe.
      */
-    static pipe_end write_end()
+    static constexpr pipe_end
+    write_end() noexcept
     {
-        static pipe_end write{WRITE_END};
-        return write;
+        return pipe_end{WRITE_END};
     }
 
     /**
@@ -102,14 +115,14 @@ class pipe_t
      */
     pipe_t()
     {
-#if PROCXX_HAS_PIPE2
-        const auto r = ::pipe2(&pipe_[0], O_CLOEXEC);
-        if (-1 == r)
-            throw exception("pipe2 failed: " +
-                std::system_category().message(errno));
-#else
+        // It seems that this mutex is necessary to avoid leaking
+        // of file descriptors without FD_CLOEXEC set if another
+        // thread calls fork()+exec().
+        //
         static std::mutex mutex;
         std::lock_guard<std::mutex> lock{mutex};
+
+        //FIXME: the result of that function should be checked!
         ::pipe(&pipe_[0]);
 
         auto flags = ::fcntl(pipe_[0], F_GETFD, 0);
@@ -117,17 +130,16 @@ class pipe_t
 
         flags = ::fcntl(pipe_[1], F_GETFD, 0);
         ::fcntl(pipe_[1], F_SETFD, flags | FD_CLOEXEC);
-#endif
     }
 
     /**
      * Pipes may be move constructed.
      */
-    pipe_t(pipe_t&& other)
+    pipe_t(pipe_t&& other) noexcept
     {
         pipe_ = std::move(other.pipe_);
-        other.pipe_[READ_END] = -1;
-        other.pipe_[WRITE_END] = -1;
+        other.pipe_[pipe_t::read_end()] = -1;
+        other.pipe_[pipe_t::write_end()] = -1;
     }
 
     /**
@@ -141,22 +153,48 @@ class pipe_t
      * @param buf the buffer to get bytes from
      * @param length the number of bytes to write
      */
-    void write(const char* buf, uint64_t length)
+    std::error_code
+    write(
+        nothrow, const char* buf, std::size_t length) noexcept
     {
-        auto bytes = ::write(pipe_[WRITE_END], buf, length);
-        if (bytes == -1)
+        while (0u != length)
         {
-            // interrupt, just attempt to write again
-            if (errno == EINTR)
-                return write(buf, length);
-            // otherwise, unrecoverable error
-            perror("pipe_t::write()");
-            throw exception{"failed to write"};
+            do
+            {
+                auto bytes = ::write(pipe_[pipe_t::write_end()], buf, length);
+                if (bytes == -1)
+                {
+                    if (errno != EINTR)
+                        return details::error_code_from_errno(errno);
+                }
+                else
+                {
+                    length -= static_cast<std::size_t>(bytes);
+                    buf += bytes;
+                }
+            }
+            // In the case of an interrupt just attempt to write again.
+            while (EINTR == errno);
         }
-        if (bytes < static_cast<ssize_t>(length))
-            write(buf + bytes, length - static_cast<uint64_t>(bytes));
+
+        return {};
     }
 
+    /**
+     * Writes length bytes from buf to the pipe.
+     *
+     * @param buf the buffer to get bytes from
+     * @param length the number of bytes to write
+     */
+    void
+    write(const char* buf, std::size_t length)
+    {
+        const auto ec = write(nothrow{}, buf, length);
+        if (ec)
+            throw exception{"write failure: " + ec.message()};
+    }
+
+//FIXME: should this method handle EINTR?
     /**
      * Reads up to length bytes from the pipe, placing them in buf.
      *
@@ -164,25 +202,32 @@ class pipe_t
      * @param length the maximum number of bytes to read
      * @return the actual number of bytes read
      */
-    ssize_t read(char* buf, uint64_t length)
+    std::pair<std::error_code, ssize_t>
+    read(
+        nothrow, char* buf, uint64_t length) noexcept
     {
-        auto bytes = ::read(pipe_[READ_END], buf, length);
-        return bytes;
+        auto bytes = ::read(pipe_[pipe_t::read_end()], buf, length);
+        if (-1 == bytes)
+            return make_pair(details::error_code_from_errno(errno), bytes);
+        else
+            return make_pair(std::error_code{}, bytes);
     }
 
     /**
      * Closes both ends of the pipe.
      */
-    void close()
+    void
+    close(nothrow nothr) noexcept
     {
-        close(read_end());
-        close(write_end());
+        close(nothr, read_end());
+        close(nothr, write_end());
     }
 
     /**
      * Closes a specific end of the pipe.
      */
-    void close(pipe_end end)
+    void
+    close(nothrow, pipe_end end) noexcept
     {
         if (pipe_[end] != -1)
         {
@@ -194,7 +239,8 @@ class pipe_t
     /**
      * Determines if an end of the pipe is still open.
      */
-    bool open(pipe_end end)
+    bool
+    open(pipe_end end) noexcept
     {
         return pipe_[end] != -1;
     }
@@ -205,13 +251,28 @@ class pipe_t
      * @param end the end of the pipe to connect to the file descriptor
      * @param fd the file descriptor to connect
      */
-    void dup(pipe_end end, int fd)
+    std::error_code
+    dup(nothrow, pipe_end end, int fd) noexcept
     {
         if (::dup2(pipe_[end], fd) == -1)
-        {
-            perror("pipe_t::dup()");
-            throw exception{"failed to dup"};
-        }
+            return details::error_code_from_errno(errno);
+        else
+            return {};
+    }
+
+//FIXME: should this method has a nothrow alternative?
+    /**
+     * Redirects the given file descriptor to the given end of the pipe.
+     *
+     * @param end the end of the pipe to connect to the file descriptor
+     * @param fd the file descriptor to connect
+     */
+    void
+    dup(pipe_end end, int fd)
+    {
+        const auto ec = dup(nothrow{}, end, fd);
+        if (ec)
+            throw exception{"dup failure: " + ec.message()};
     }
 
     /**
@@ -220,7 +281,20 @@ class pipe_t
      * @param end the end of the pipe to redirect
      * @param other the pipe to redirect to the current pipe
      */
-    void dup(pipe_end end, pipe_t& other)
+    std::error_code
+    dup(nothrow nothr, pipe_end end, pipe_t& other) noexcept
+    {
+        return dup(nothr, end, other.pipe_[end]);
+    }
+
+    /**
+     * Redirects the given end of the given pipe to the current pipe.
+     *
+     * @param end the end of the pipe to redirect
+     * @param other the pipe to redirect to the current pipe
+     */
+    void
+    dup(pipe_end end, pipe_t& other)
     {
         dup(end, other.pipe_[end]);
     }
@@ -231,7 +305,7 @@ class pipe_t
      */
     ~pipe_t()
     {
-        close();
+        close(nothrow{});
     }
 
     /**
@@ -270,7 +344,8 @@ class pipe_ostreambuf : public std::streambuf
 
     ~pipe_ostreambuf() override = default;
 
-    int_type underflow() override
+    int_type
+    underflow() override
     {
         // if the buffer is not exhausted, return the next element
         if (gptr() < egptr())
@@ -292,19 +367,21 @@ class pipe_ostreambuf : public std::streambuf
         }
 
         // start now points to the head of the usable area of the buffer
-        auto bytes
-            = stdout_pipe_.read(start, in_buffer_.size() - static_cast<std::size_t>(start - base));
+        auto read_result = stdout_pipe_.read(nothrow{},
+                start,
+                in_buffer_.size() - static_cast<std::size_t>(start - base));
 
-        if (bytes == -1)
+        if (read_result.first)
         {
-            ::perror("read");
-            throw exception{"failed to read from pipe"};
+            //FIXME: additional information should be added to the exception.
+            throw exception{"pipe read failure: "
+                    + read_result.first.message()};
         }
 
-        if (bytes == 0)
+        if (read_result.second == 0)
             return traits_type::eof();
 
-        setg(base, start, start + bytes);
+        setg(base, start, start + read_result.second);
 
         return traits_type::to_int_type(*gptr());
     }
@@ -321,7 +398,8 @@ class pipe_ostreambuf : public std::streambuf
     /**
      * Gets the stdout pipe.
      */
-    pipe_t& stdout_pipe()
+    pipe_t&
+    stdout_pipe() noexcept
     {
         return stdout_pipe_;
     }
@@ -329,15 +407,37 @@ class pipe_ostreambuf : public std::streambuf
     /**
      * Closes one of the pipes. This will flush any remaining bytes in the
      * output buffer.
+     *
+     * NOTE: this method doesn't throw.
      */
-    virtual void close(pipe_t::pipe_end end)
+    virtual std::error_code
+    close(nothrow, pipe_t::pipe_end end) noexcept
     {
         if (end == pipe_t::read_end())
-            stdout_pipe().close(pipe_t::read_end());
+            stdout_pipe().close(nothrow{}, pipe_t::read_end());
+        return {};
+    }
+
+    /**
+     * Closes one of the pipes. This will flush any remaining bytes in the
+     * output buffer.
+     *
+     * NOTE: this method can throw.
+     */
+    virtual void
+    close(pipe_t::pipe_end end)
+    {
+        auto ec = this->close(nothrow{}, end);
+        if (ec)
+            throw exception(ec.message());
     }
 
   protected:
-    virtual void flush() { }
+    virtual std::error_code
+    flush(nothrow) noexcept { return {}; }
+
+    virtual void
+    flush() { }
 
     size_t put_back_size_;
     pipe_t stdout_pipe_;
@@ -356,17 +456,17 @@ class pipe_streambuf : public pipe_ostreambuf
         setp(begin, begin + out_buffer_.size() - 1);
     }
 
-
     /**
      * Destroys the streambuf, which will flush any remaining content on
      * the output buffer.
      */
     ~pipe_streambuf() override
     {
-        try{ flush(); } catch(...) {} // Exceptions shouldn't go out.
+        (void)flush(nothrow{});
     }
 
-    int_type overflow(int_type ch) override
+    int_type
+    overflow(int_type ch) override
     {
         if (ch != traits_type::eof())
         {
@@ -379,7 +479,8 @@ class pipe_streambuf : public pipe_ostreambuf
         return traits_type::eof();
     }
 
-    int sync() override
+    int
+    sync() override
     {
         flush();
         return 0;
@@ -388,29 +489,73 @@ class pipe_streambuf : public pipe_ostreambuf
     /**
      * Gets the stdin pipe.
      */
-    pipe_t& stdin_pipe()
+    pipe_t&
+    stdin_pipe() noexcept
     {
         return stdin_pipe_;
     }
 
-    void close(pipe_t::pipe_end end) override
+    std::error_code
+    close(nothrow nothrow, pipe_t::pipe_end end) noexcept override
     {
-        pipe_ostreambuf::close(end);
-        if (end != pipe_t::read_end())
+        std::error_code rc_flush;
+        std::error_code rc_base_close;
+
+        if (end == pipe_t::write_end())
         {
-            flush();
-            stdin_pipe().close(pipe_t::write_end());
+            rc_flush = flush(nothrow);
+            stdin_pipe().close(nothrow, pipe_t::write_end());
         }
+
+        rc_base_close = pipe_ostreambuf::close(nothrow, end);
+
+        if (rc_flush) return rc_flush;
+        if (rc_base_close) return rc_base_close;
+
+        return {};
+    }
+
+    void
+    close(pipe_t::pipe_end end) override
+    {
+        auto rc = this->close(nothrow{}, end);
+        if (rc)
+            throw exception(rc.message());
     }
 
   private:
-    void flush() override
+    std::error_code
+    flush(nothrow) noexcept override
     {
+        std::error_code rc{};
         if (stdin_pipe_.open(pipe_t::write_end()))
         {
-            stdin_pipe_.write(pbase(), static_cast<std::size_t>(pptr() - pbase()));
-            pbump(static_cast<int>(-(pptr() - pbase())));
+            rc = stdin_pipe_.write(
+                    nothrow{},
+                    pbase(),
+                    static_cast<std::size_t>(pptr() - pbase()));
+            if (!rc)
+            {
+                try
+                {
+                    pbump(static_cast<int>(-(pptr() - pbase())));
+                }
+                catch(...)
+                {
+                    rc = std::make_error_code(std::io_errc::stream);
+                }
+            }
         }
+
+        return rc;
+    }
+
+    void
+    flush() override
+    {
+        const auto rc = flush(nothrow{});
+        if (rc)
+            throw exception{"flush failure: " + rc.message()};
     }
 
     pipe_t stdin_pipe_;
@@ -443,13 +588,6 @@ class process
         // nothing
     }
 
-     /**
-      * Get the application name.
-      */
-     const std::string & application() const noexcept {
-         return args_[0];
-     }
-
     /*
      * Adds an argument to the argument-list
      */
@@ -469,7 +607,8 @@ class process
      * Sets the process to read from the standard output of another
      * process.
      */
-    void read_from(process& other)
+    void
+    read_from(process& other) noexcept
     {
         read_from_ = &other;
     }
@@ -481,7 +620,8 @@ class process
      * from fork() call in the child process.
      */
     template<typename Hook>
-    void exec(Hook && child_post_fork_hook)
+    void
+    exec(Hook && child_post_fork_hook)
     {
         if (pid_ != -1)
             throw exception{"process already started"};
@@ -491,26 +631,27 @@ class process
         auto pid = fork();
         if (pid == -1)
         {
-            perror("fork()");
-            throw exception{"Failed to fork child process"};
+            throw exception{"Failed to fork child process: " +
+                details::error_code_from_errno(errno).message()};
         }
         else if (pid == 0)
         {
             child_post_fork_hook();
 
-            err_pipe.close(pipe_t::read_end());
-            pipe_buf_.stdin_pipe().close(pipe_t::write_end());
-            pipe_buf_.stdout_pipe().close(pipe_t::read_end());
+            //FIXME: should nothrow versions be used here?
+            err_pipe.close(nothrow{}, pipe_t::read_end());
+            pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::write_end());
+            pipe_buf_.stdout_pipe().close(nothrow{}, pipe_t::read_end());
             pipe_buf_.stdout_pipe().dup(pipe_t::write_end(), STDOUT_FILENO);
-            err_buf_.stdout_pipe().close(pipe_t::read_end());
+            err_buf_.stdout_pipe().close(nothrow{}, pipe_t::read_end());
             err_buf_.stdout_pipe().dup(pipe_t::write_end(), STDERR_FILENO);
 
             if (read_from_)
             {
                 read_from_->recursive_close_stdin();
-                pipe_buf_.stdin_pipe().close(pipe_t::read_end());
-                read_from_->pipe_buf_.stdout_pipe().dup(pipe_t::read_end(),
-                                                        STDIN_FILENO);
+                pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::read_end());
+                read_from_->pipe_buf_.stdout_pipe().dup(
+                        pipe_t::read_end(), STDIN_FILENO);
             }
             else
             {
@@ -529,35 +670,36 @@ class process
             char err[sizeof(int)];
             std::memcpy(err, &errno, sizeof(int));
             err_pipe.write(err, sizeof(int));
-            err_pipe.close();
+            err_pipe.close(nothrow{});
             std::_Exit(EXIT_FAILURE);
         }
         else
         {
-            err_pipe.close(pipe_t::write_end());
-            pipe_buf_.stdout_pipe().close(pipe_t::write_end());
-            err_buf_.stdout_pipe().close(pipe_t::write_end());
-            pipe_buf_.stdin_pipe().close(pipe_t::read_end());
+            //FIXME: should nothrow versions be used here?
+            err_pipe.close(nothrow{}, pipe_t::write_end());
+            pipe_buf_.stdout_pipe().close(nothrow{}, pipe_t::write_end());
+            err_buf_.stdout_pipe().close(nothrow{}, pipe_t::write_end());
+            pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::read_end());
             if (read_from_)
             {
-                pipe_buf_.stdin_pipe().close(pipe_t::write_end());
-                read_from_->pipe_buf_.stdout_pipe().close(pipe_t::read_end());
-                read_from_->err_buf_.stdout_pipe().close(pipe_t::read_end());
+                pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::write_end());
+                read_from_->pipe_buf_.stdout_pipe().close(nothrow{}, pipe_t::read_end());
+                read_from_->err_buf_.stdout_pipe().close(nothrow{}, pipe_t::read_end());
             }
             pid_ = pid;
 
             char err[sizeof(int)];
-            auto bytes = err_pipe.read(err, sizeof(int));
-            if (bytes == sizeof(int))
+            auto read_result = err_pipe.read(nothrow{}, err, sizeof(int));
+            if (!read_result.first && read_result.second == sizeof(int))
             {
                 int ec = 0;
                 std::memcpy(&ec, err, sizeof(int));
                 throw exception{"Failed to exec process: "
-                                + std::system_category().message(ec)};
+                        + details::error_code_from_errno(ec).message()};
             }
             else
             {
-                err_pipe.close();
+                err_pipe.close(nothrow{});
             }
         }
     }
@@ -565,7 +707,8 @@ class process
     /**
      * Executes the process.
      */
-    void exec()
+    void
+    exec()
     {
        this->exec([]{});
     }
@@ -586,13 +729,15 @@ class process
      */
     ~process()
     {
-        wait();
+        //FIXME: can wait throw?
+        (void)wait(nothrow{});
     }
 
     /**
      * Gets the process id.
      */
-    pid_t id() const
+    pid_t
+    id() const noexcept
     {
         return pid_;
     }
@@ -603,11 +748,12 @@ class process
      */
     class limits_t
     {
-      public:
+    public:
         /**
          * Sets the maximum amount of cpu time, in seconds.
          */
-        void cpu_time(rlim_t max)
+        void
+        cpu_time(rlim_t max) noexcept
         {
             lim_cpu_ = true;
             cpu_.rlim_cur = cpu_.rlim_max = max;
@@ -616,7 +762,8 @@ class process
         /**
          * Sets the maximum allowed memory usage, in bytes.
          */
-        void memory(rlim_t max)
+        void
+        memory(rlim_t max) noexcept
         {
             lim_as_ = true;
             as_.rlim_cur = as_.rlim_max = max;
@@ -625,18 +772,19 @@ class process
         /**
          * Applies the set limits to the current process.
          */
-        void set_limits()
+        void
+        set_limits()
         {
             if (lim_cpu_ && setrlimit(RLIMIT_CPU, &cpu_) != 0)
             {
-                perror("limits_t::set_limits()");
-                throw exception{"Failed to set cpu time limit"};
+                throw exception{"Failed to set cpu time limit: " +
+                        details::error_code_from_errno(errno).message()};
             }
 
             if (lim_as_ && setrlimit(RLIMIT_AS, &as_) != 0)
             {
-                perror("limits_t::set_limits()");
-                throw exception{"Failed to set memory limit"};
+                throw exception{"Failed to set memory limit: " +
+                        details::error_code_from_errno(errno).message()};
             }
         }
 
@@ -650,7 +798,8 @@ class process
     /**
      * Sets the limits for this process.
      */
-    void limit(const limits_t& limits)
+    void
+    limit(const limits_t& limits)
     {
         limits_ = limits;
     }
@@ -658,25 +807,47 @@ class process
     /**
      * Waits for the child to exit.
      */
-    void wait()
+    std::error_code
+    wait(nothrow) noexcept
     {
         if (!waited_)
         {
-            // Because wait() can be called from the destructor it
-            // shouldn't throw.
-            // close() method can throw an exception if pipe is broken.
-            try{ pipe_buf_.close(pipe_t::write_end()); } catch(...) {}
-            try{ err_buf_.close(pipe_t::write_end()); } catch(...) {}
+            const auto rc_pipe_buf_close =
+                    pipe_buf_.close(nothrow{}, pipe_t::write_end());
+            const auto rc_err_buf_close =
+                    err_buf_.close(nothrow{}, pipe_t::write_end());
+
+            // FIXME: the result of waitpid should be checked too.
             waitpid(pid_, &status_, 0);
             pid_ = -1;
             waited_ = true;
+
+            if (rc_pipe_buf_close)
+                return rc_pipe_buf_close;
+            if (rc_err_buf_close)
+                return rc_err_buf_close;
         }
+ 
+        return {};
+    }
+
+    /**
+     * Waits for the child to exit.
+     */
+    //FIXME: can it throw?
+    void
+    wait()
+    {
+        const auto rc = wait(nothrow{});
+        if (rc)
+            throw exception{"wait failure: " + rc.message()};
     }
 
     /**
      * It wait() already called?
      */
-    bool waited() const
+    bool
+    waited() const noexcept
     {
         return waited_;
     }
@@ -684,7 +855,8 @@ class process
     /**
      * Determines if process is running.
      */
-    bool running() const
+    bool
+    running() const
     {
         return ::procxx::running(*this);
     }
@@ -692,7 +864,8 @@ class process
     /**
      * Determines if the child exited properly.
      */
-    bool exited() const
+    bool
+    exited() const
     {
         if (!waited_)
             throw exception{"process::wait() not yet called"};
@@ -702,7 +875,8 @@ class process
     /**
      * Determines if the child was killed.
      */
-    bool killed() const
+    bool
+    killed() const
     {
         if (!waited_)
             throw exception{"process::wait() not yet called"};
@@ -712,7 +886,8 @@ class process
     /**
      * Determines if the child was stopped.
      */
-    bool stopped() const
+    bool
+    stopped() const
     {
         if (!waited_)
             throw exception{"process::wait() not yet called"};
@@ -723,7 +898,8 @@ class process
      * Gets the exit code for the child. If it was killed or stopped, the
      * signal that did so is returned instead.
      */
-    int code() const
+    int
+    code() const
     {
         if (!waited_)
             throw exception{"process::wait() not yet called"};
@@ -739,10 +915,27 @@ class process
     /**
      * Closes the given end of the pipe.
      */
-    void close(pipe_t::pipe_end end)
+    std::error_code
+    close(nothrow nothr, pipe_t::pipe_end end) noexcept
     {
-        pipe_buf_.close(end);
-        err_buf_.close(end);
+        const auto rc_pipe_buf_close = pipe_buf_.close(nothr, end);
+        const auto rc_err_buf_close = err_buf_.close(nothr, end);
+
+        if (rc_pipe_buf_close) return rc_pipe_buf_close;
+        if (rc_err_buf_close) return rc_err_buf_close;
+
+        return {};
+    }
+
+    /**
+     * Closes the given end of the pipe.
+     */
+    void
+    close(pipe_t::pipe_end end)
+    {
+        const auto rc = close(nothrow{}, end);
+        if (rc)
+            throw exception{"close failure: " + rc.message()};
     }
 
     /**
@@ -757,7 +950,8 @@ class process
     /**
      * Conversion to std::ostream.
      */
-    std::ostream& input()
+    std::ostream&
+    input() noexcept
     {
         return in_stream_;
     }
@@ -765,7 +959,8 @@ class process
     /**
      * Conversion to std::istream.
      */
-    std::istream& output()
+    std::istream&
+    output() noexcept
     {
         return out_stream_;
     }
@@ -773,7 +968,8 @@ class process
     /**
      * Conversion to std::istream.
      */
-    std::istream& error()
+    std::istream&
+    error() noexcept
     {
         return err_stream_;
     }
@@ -798,9 +994,11 @@ class process
     };
 
   private:
-    void recursive_close_stdin()
+    //FIXME: should this method has a nothrow alternative?
+    void
+    recursive_close_stdin()
     {
-        pipe_buf_.stdin_pipe().close();
+        pipe_buf_.stdin_pipe().close(nothrow{});
         if (read_from_)
             read_from_->recursive_close_stdin();
     }
@@ -865,7 +1063,7 @@ class pipeline
     /**
      * Obtains the process at the head of the pipeline.
      */
-    process& head() const
+    process& head() const noexcept
     {
         return processes_.front();
     }
@@ -873,7 +1071,7 @@ class pipeline
     /**
      * Obtains the process at the tail of the pipeline.
      */
-    process& tail() const
+    process& tail() const noexcept
     {
         return processes_.back();
     }
@@ -917,6 +1115,7 @@ inline pipeline operator|(process& first, process& second)
     return p | second;
 }
 
+//FIXME: should this function has a nothrow alternative?
 /**
  * Determines if process is running (zombies are seen as running).
  */
@@ -931,7 +1130,6 @@ inline bool running(pid_t pid)
             const auto r = ::waitpid(pid, &status, WNOHANG);
             if (-1 == r)
             {
-                perror("waitpid()");
                 throw process::exception{"Failed to check process state "
                     "by waitpid(): "
                     + std::system_category().message(errno)};
@@ -960,3 +1158,6 @@ inline bool running(const process & pr)
 }
 
 #endif
+
+// vim:ts=4:sts=4:sw=4:expandtab
+
