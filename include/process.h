@@ -32,6 +32,21 @@
 #include <system_error>
 #include <vector>
 
+// Try to use __has_cpp_attribute if it is supported.
+#if defined(__has_cpp_attribute)
+	// clang-4 and clang-5 produce warnings when [[nodiscard]]
+	// is used with -std=c++11 and -std=c++14.
+	#if __has_cpp_attribute(nodiscard) && \
+			!(defined(__clang__) && __cplusplus < 201703L)
+		#define PROCXXRV_NODISCARD [[nodiscard]]
+	#endif
+#endif
+
+// Handle the result of __has_cpp_attribute.
+#if !defined( PROCXXRV_NODISCARD )
+	#define PROCXXRV_NODISCARD
+#endif
+
 namespace procxx
 {
 
@@ -39,10 +54,42 @@ namespace details
 {
 
 // See https://stackoverflow.com/questions/13950938/construct-stderror-code-from-errno-on-posix-and-getlasterror-on-windows
+PROCXXRV_NODISCARD
 inline std::error_code
 error_code_from_errno(int errno_v)
 {
     return std::make_error_code(static_cast<std::errc>(errno_v));
+}
+
+template<typename Lambda>
+PROCXXRV_NODISCARD
+std::error_code
+first_of_errors(Lambda && action)
+{
+    const std::error_code rc = action(); // Just for type-checking.
+    return rc;
+}
+
+template<typename Lambda, typename... Tail>
+PROCXXRV_NODISCARD
+std::error_code
+first_of_errors(
+    Lambda && action,
+    Tail && ...tail)
+{
+    const std::error_code rc1 = action();
+    const std::error_code rc2 = first_of_errors(std::forward<Tail>(tail)...);
+    return rc1 ? rc1 : rc2;
+}
+
+template<typename Exception>
+void
+throw_on_error(
+    const char * what,
+    const std::error_code ec)
+{
+    if (ec)
+        throw Exception{what + ec.message()};
 }
 
 } /* namespace details */
@@ -95,6 +142,7 @@ public:
     /**
      * Gets a pipe_end representing the read end of a pipe.
      */
+    PROCXXRV_NODISCARD
     static constexpr pipe_end
     read_end() noexcept
     {
@@ -104,6 +152,7 @@ public:
     /**
      * Gets a pipe_end representing the write end of a pipe.
      */
+    PROCXXRV_NODISCARD
     static constexpr pipe_end
     write_end() noexcept
     {
@@ -153,6 +202,7 @@ public:
      * @param buf the buffer to get bytes from
      * @param length the number of bytes to write
      */
+    PROCXXRV_NODISCARD
     std::error_code
     write(
         nothrow, const char* buf, std::size_t length) noexcept
@@ -189,9 +239,9 @@ public:
     void
     write(const char* buf, std::size_t length)
     {
-        const auto ec = write(nothrow{}, buf, length);
-        if (ec)
-            throw exception{"write failure: " + ec.message()};
+        details::throw_on_error<exception>(
+                "write failure: ",
+                write(nothrow{}, buf, length));
     }
 
 //FIXME: should this method handle EINTR?
@@ -202,6 +252,7 @@ public:
      * @param length the maximum number of bytes to read
      * @return the actual number of bytes read
      */
+    PROCXXRV_NODISCARD
     std::pair<std::error_code, ssize_t>
     read(
         nothrow, char* buf, uint64_t length) noexcept
@@ -216,29 +267,61 @@ public:
     /**
      * Closes both ends of the pipe.
      */
-    void
+    PROCXXRV_NODISCARD
+    std::error_code
     close(nothrow nothr) noexcept
     {
-        close(nothr, read_end());
-        close(nothr, write_end());
+        return details::first_of_errors(
+                [&]{ return close(nothr, read_end()); },
+                [&]{ return close(nothr, write_end()); });
+    }
+
+    /**
+     * Closes both ends of the pipe.
+     */
+    void
+    close()
+    {
+        details::throw_on_error<exception>(
+                "close failure: ",
+                close(nothrow{}));
+    }
+
+    /**
+     * Closes a specific end of the pipe.
+     */
+    PROCXXRV_NODISCARD
+    std::error_code
+    close(nothrow, pipe_end end) noexcept
+    {
+        std::error_code rc{};
+
+        if (pipe_[end] != -1)
+        {
+            if (-1 == ::close(pipe_[end]))
+                rc = details::error_code_from_errno(errno);
+
+            pipe_[end] = -1;
+        }
+
+        return rc;
     }
 
     /**
      * Closes a specific end of the pipe.
      */
     void
-    close(nothrow, pipe_end end) noexcept
+    close(pipe_end end)
     {
-        if (pipe_[end] != -1)
-        {
-            ::close(pipe_[end]);
-            pipe_[end] = -1;
-        }
+        details::throw_on_error<exception>(
+                "close(pipe_end) failure: ",
+                close(nothrow{}, end));
     }
 
     /**
      * Determines if an end of the pipe is still open.
      */
+    PROCXXRV_NODISCARD
     bool
     open(pipe_end end) noexcept
     {
@@ -251,6 +334,7 @@ public:
      * @param end the end of the pipe to connect to the file descriptor
      * @param fd the file descriptor to connect
      */
+    PROCXXRV_NODISCARD
     std::error_code
     dup(nothrow, pipe_end end, int fd) noexcept
     {
@@ -270,9 +354,9 @@ public:
     void
     dup(pipe_end end, int fd)
     {
-        const auto ec = dup(nothrow{}, end, fd);
-        if (ec)
-            throw exception{"dup failure: " + ec.message()};
+        details::throw_on_error<exception>(
+                "dup failure: ",
+                dup(nothrow{}, end, fd));
     }
 
     /**
@@ -281,6 +365,7 @@ public:
      * @param end the end of the pipe to redirect
      * @param other the pipe to redirect to the current pipe
      */
+    PROCXXRV_NODISCARD
     std::error_code
     dup(nothrow nothr, pipe_end end, pipe_t& other) noexcept
     {
@@ -305,7 +390,7 @@ public:
      */
     ~pipe_t()
     {
-        close(nothrow{});
+        (void)close(nothrow{});
     }
 
     /**
@@ -398,6 +483,7 @@ class pipe_ostreambuf : public std::streambuf
     /**
      * Gets the stdout pipe.
      */
+    PROCXXRV_NODISCARD
     pipe_t&
     stdout_pipe() noexcept
     {
@@ -410,12 +496,14 @@ class pipe_ostreambuf : public std::streambuf
      *
      * NOTE: this method doesn't throw.
      */
+    PROCXXRV_NODISCARD
     virtual std::error_code
     close(nothrow, pipe_t::pipe_end end) noexcept
     {
+        std::error_code rc{};
         if (end == pipe_t::read_end())
-            stdout_pipe().close(nothrow{}, pipe_t::read_end());
-        return {};
+            rc = stdout_pipe().close(nothrow{}, pipe_t::read_end());
+        return rc;
     }
 
     /**
@@ -433,6 +521,7 @@ class pipe_ostreambuf : public std::streambuf
     }
 
   protected:
+    PROCXXRV_NODISCARD
     virtual std::error_code
     flush(nothrow) noexcept { return {}; }
 
@@ -489,30 +578,28 @@ class pipe_streambuf : public pipe_ostreambuf
     /**
      * Gets the stdin pipe.
      */
+    PROCXXRV_NODISCARD
     pipe_t&
     stdin_pipe() noexcept
     {
         return stdin_pipe_;
     }
 
+    PROCXXRV_NODISCARD
     std::error_code
     close(nothrow nothrow, pipe_t::pipe_end end) noexcept override
     {
-        std::error_code rc_flush;
-        std::error_code rc_base_close;
-
-        if (end == pipe_t::write_end())
-        {
-            rc_flush = flush(nothrow);
-            stdin_pipe().close(nothrow, pipe_t::write_end());
-        }
-
-        rc_base_close = pipe_ostreambuf::close(nothrow, end);
-
-        if (rc_flush) return rc_flush;
-        if (rc_base_close) return rc_base_close;
-
-        return {};
+        return details::first_of_errors(
+                [&]{
+                    if (end == pipe_t::write_end())
+                        return details::first_of_errors(
+                            [&]{ return flush(nothrow); },
+                            [&]{ return stdin_pipe().close(
+                                    nothrow, pipe_t::write_end()); });
+                    else
+                        return std::error_code{};
+                },
+                [&]{ return pipe_ostreambuf::close(nothrow, end); });
     }
 
     void
@@ -636,20 +723,30 @@ class process
         }
         else if (pid == 0)
         {
+            // NOTE: throwing versions are used here.
+            //
+            // If an exception is thrown before the call to `execvp` then
+            // child process will die. The parent won't read an error code
+            // from err_pipe and there will be an ordinary return from
+            // exec() method in the parent process. So the parent process
+            // will think that the child is running until the status of
+            // the child process will be checked.
+            //
             child_post_fork_hook();
 
-            //FIXME: should nothrow versions be used here?
-            err_pipe.close(nothrow{}, pipe_t::read_end());
-            pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::write_end());
-            pipe_buf_.stdout_pipe().close(nothrow{}, pipe_t::read_end());
+            err_pipe.close(pipe_t::read_end());
+            pipe_buf_.stdin_pipe().close(pipe_t::write_end());
+            pipe_buf_.stdout_pipe().close(pipe_t::read_end());
             pipe_buf_.stdout_pipe().dup(pipe_t::write_end(), STDOUT_FILENO);
-            err_buf_.stdout_pipe().close(nothrow{}, pipe_t::read_end());
+            err_buf_.stdout_pipe().close(pipe_t::read_end());
             err_buf_.stdout_pipe().dup(pipe_t::write_end(), STDERR_FILENO);
 
             if (read_from_)
             {
-                read_from_->recursive_close_stdin();
-                pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::read_end());
+                // NOTE: recursive_close_stdin has no throwing version.
+                read_from_->recursive_close_stdin(nothrow{});
+
+                pipe_buf_.stdin_pipe().close(pipe_t::read_end());
                 read_from_->pipe_buf_.stdout_pipe().dup(
                         pipe_t::read_end(), STDIN_FILENO);
             }
@@ -669,29 +766,45 @@ class process
 
             char err[sizeof(int)];
             std::memcpy(err, &errno, sizeof(int));
-            err_pipe.write(err, sizeof(int));
-            err_pipe.close(nothrow{});
+            (void)err_pipe.write(nothrow{}, err, sizeof(int));
+            (void)err_pipe.close(nothrow{});
             std::_Exit(EXIT_FAILURE);
         }
         else
         {
-            //FIXME: should nothrow versions be used here?
-            err_pipe.close(nothrow{}, pipe_t::write_end());
-            pipe_buf_.stdout_pipe().close(nothrow{}, pipe_t::write_end());
-            err_buf_.stdout_pipe().close(nothrow{}, pipe_t::write_end());
-            pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::read_end());
+            // NOTE: the pid of the child should be stored.
+            // It marks the `process` object as `started`. And that allows
+            // to wait for the child process, check its status, kill it
+            // and so on.
+            pid_ = pid;
+
+            //
+            // NOTE: non-throwing versions are used here.
+            // It's because the `exec()` in parent process should throw
+            // only if the child can't launch the process specified.
+            // All other errors just ignored to allow calls to `wait`,
+            // `id`, `running` and other methods of `process` class that
+            // are actual for controlling the running child.
+            //
+            (void)err_pipe.close(nothrow{}, pipe_t::write_end());
+            (void)pipe_buf_.stdout_pipe().close(nothrow{}, pipe_t::write_end());
+            (void)err_buf_.stdout_pipe().close(nothrow{}, pipe_t::write_end());
+            (void)pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::read_end());
             if (read_from_)
             {
-                pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::write_end());
-                read_from_->pipe_buf_.stdout_pipe().close(nothrow{}, pipe_t::read_end());
-                read_from_->err_buf_.stdout_pipe().close(nothrow{}, pipe_t::read_end());
+                (void)pipe_buf_.stdin_pipe().close(
+                        nothrow{}, pipe_t::write_end());
+                (void)read_from_->pipe_buf_.stdout_pipe().close(
+                        nothrow{}, pipe_t::read_end());
+                (void)read_from_->err_buf_.stdout_pipe().close(
+                        nothrow{}, pipe_t::read_end());
             }
-            pid_ = pid;
 
             char err[sizeof(int)];
             auto read_result = err_pipe.read(nothrow{}, err, sizeof(int));
             if (!read_result.first && read_result.second == sizeof(int))
             {
+                //FIXME: should wait() be called before throwing an exception?
                 int ec = 0;
                 std::memcpy(&ec, err, sizeof(int));
                 throw exception{"Failed to exec process: "
@@ -699,7 +812,7 @@ class process
             }
             else
             {
-                err_pipe.close(nothrow{});
+                (void)err_pipe.close(nothrow{});
             }
         }
     }
@@ -729,13 +842,13 @@ class process
      */
     ~process()
     {
-        //FIXME: can wait throw?
         (void)wait(nothrow{});
     }
 
     /**
      * Gets the process id.
      */
+    PROCXXRV_NODISCARD
     pid_t
     id() const noexcept
     {
@@ -807,45 +920,47 @@ class process
     /**
      * Waits for the child to exit.
      */
+    PROCXXRV_NODISCARD
     std::error_code
     wait(nothrow) noexcept
     {
+        std::error_code rc{};
         if (!waited_)
         {
-            const auto rc_pipe_buf_close =
-                    pipe_buf_.close(nothrow{}, pipe_t::write_end());
-            const auto rc_err_buf_close =
-                    err_buf_.close(nothrow{}, pipe_t::write_end());
+            rc = details::first_of_errors(
+                    [&]{ return pipe_buf_.close(
+                            nothrow{}, pipe_t::write_end()); },
+                    [&]{ return err_buf_.close(
+                            nothrow{}, pipe_t::write_end()); },
+                    [&]{
+                        const auto r = waitpid(pid_, &status_, 0);
+                        return -1 == r ?
+                                details::error_code_from_errno(errno) :
+                                std::error_code{};
+                    } );
 
-            // FIXME: the result of waitpid should be checked too.
-            waitpid(pid_, &status_, 0);
             pid_ = -1;
             waited_ = true;
-
-            if (rc_pipe_buf_close)
-                return rc_pipe_buf_close;
-            if (rc_err_buf_close)
-                return rc_err_buf_close;
         }
  
-        return {};
+        return rc;
     }
 
     /**
      * Waits for the child to exit.
      */
-    //FIXME: can it throw?
     void
     wait()
     {
-        const auto rc = wait(nothrow{});
-        if (rc)
-            throw exception{"wait failure: " + rc.message()};
+        details::throw_on_error<exception>(
+                "wait failure: ",
+                wait(nothrow{}));
     }
 
     /**
      * It wait() already called?
      */
+    PROCXXRV_NODISCARD
     bool
     waited() const noexcept
     {
@@ -855,6 +970,7 @@ class process
     /**
      * Determines if process is running.
      */
+    PROCXXRV_NODISCARD
     bool
     running() const
     {
@@ -864,6 +980,7 @@ class process
     /**
      * Determines if the child exited properly.
      */
+    PROCXXRV_NODISCARD
     bool
     exited() const
     {
@@ -875,6 +992,7 @@ class process
     /**
      * Determines if the child was killed.
      */
+    PROCXXRV_NODISCARD
     bool
     killed() const
     {
@@ -886,6 +1004,7 @@ class process
     /**
      * Determines if the child was stopped.
      */
+    PROCXXRV_NODISCARD
     bool
     stopped() const
     {
@@ -898,6 +1017,7 @@ class process
      * Gets the exit code for the child. If it was killed or stopped, the
      * signal that did so is returned instead.
      */
+    PROCXXRV_NODISCARD
     int
     code() const
     {
@@ -915,16 +1035,13 @@ class process
     /**
      * Closes the given end of the pipe.
      */
+    PROCXXRV_NODISCARD
     std::error_code
     close(nothrow nothr, pipe_t::pipe_end end) noexcept
     {
-        const auto rc_pipe_buf_close = pipe_buf_.close(nothr, end);
-        const auto rc_err_buf_close = err_buf_.close(nothr, end);
-
-        if (rc_pipe_buf_close) return rc_pipe_buf_close;
-        if (rc_err_buf_close) return rc_err_buf_close;
-
-        return {};
+        return details::first_of_errors(
+                [&]{ return pipe_buf_.close(nothr, end); },
+                [&]{ return err_buf_.close(nothr, end); });
     }
 
     /**
@@ -933,9 +1050,9 @@ class process
     void
     close(pipe_t::pipe_end end)
     {
-        const auto rc = close(nothrow{}, end);
-        if (rc)
-            throw exception{"close failure: " + rc.message()};
+        details::throw_on_error<exception>(
+                "close(pipe_end) failure: ",
+                close(nothrow{}, end));
     }
 
     /**
@@ -950,6 +1067,7 @@ class process
     /**
      * Conversion to std::ostream.
      */
+    PROCXXRV_NODISCARD
     std::ostream&
     input() noexcept
     {
@@ -959,6 +1077,7 @@ class process
     /**
      * Conversion to std::istream.
      */
+    PROCXXRV_NODISCARD
     std::istream&
     output() noexcept
     {
@@ -968,6 +1087,7 @@ class process
     /**
      * Conversion to std::istream.
      */
+    PROCXXRV_NODISCARD
     std::istream&
     error() noexcept
     {
@@ -994,13 +1114,12 @@ class process
     };
 
   private:
-    //FIXME: should this method has a nothrow alternative?
     void
-    recursive_close_stdin()
+    recursive_close_stdin(nothrow nothr) noexcept
     {
-        pipe_buf_.stdin_pipe().close(nothrow{});
+        (void)pipe_buf_.stdin_pipe().close(nothr);
         if (read_from_)
-            read_from_->recursive_close_stdin();
+            read_from_->recursive_close_stdin(nothr);
     }
 
     std::vector<std::string> args_;
@@ -1119,7 +1238,8 @@ inline pipeline operator|(process& first, process& second)
 /**
  * Determines if process is running (zombies are seen as running).
  */
-inline bool running(pid_t pid)
+inline bool
+running(pid_t pid)
 {
     bool result = false;
     if (pid != -1)
@@ -1150,7 +1270,8 @@ inline bool running(pid_t pid)
 /**
  * Determines if process is running (zombies are seen as running).
  */
-inline bool running(const process & pr)
+inline bool
+running(const process & pr)
 {
     return running(pr.id());
 }
