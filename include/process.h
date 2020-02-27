@@ -660,6 +660,14 @@ bool running(const process & pr);
  */
 class process
 {
+    //FIXME: document this!
+    enum class failure_reason : int
+    {
+        standard_exception = 0,
+        unknown_exception = 1,
+        execvp_failure = 2
+    };
+
 public:
     //FIXME: document this!
     enum class hook_place { child, parent };
@@ -719,6 +727,8 @@ public:
 
         pipe_t err_pipe;
 
+        constexpr std::size_t error_message_buffer_size = 128;
+
         auto pid = fork();
         if (pid == -1)
         {
@@ -727,55 +737,83 @@ public:
         }
         else if (pid == 0)
         {
-            // NOTE: throwing versions are used here.
-            //
-            // If an exception is thrown before the call to `execvp` then
-            // child process will die. The parent won't read an error code
-            // from err_pipe and there will be an ordinary return from
-            // exec() method in the parent process. So the parent process
-            // will think that the child is running until the status of
-            // the child process will be checked.
-            //
-            child_post_fork_hook(hook_place::child);
+//FIXME: this code fragment is too long!
+            failure_reason reason = failure_reason::execvp_failure;
+            std::array<char, error_message_buffer_size> error_message;
 
-            err_pipe.close(pipe_t::read_end());
-            pipe_buf_.stdin_pipe().close(pipe_t::write_end());
-            pipe_buf_.stdout_pipe().close(pipe_t::read_end());
-            pipe_buf_.stdout_pipe().dup(pipe_t::write_end(), STDOUT_FILENO);
-            err_buf_.stdout_pipe().close(pipe_t::read_end());
-            err_buf_.stdout_pipe().dup(pipe_t::write_end(), STDERR_FILENO);
-
-            if (read_from_)
+            try
             {
-                // NOTE: recursive_close_stdin has no throwing version.
-                read_from_->recursive_close_stdin(nothrow{});
+                child_post_fork_hook(hook_place::child);
 
-                pipe_buf_.stdin_pipe().close(pipe_t::read_end());
-                read_from_->pipe_buf_.stdout_pipe().dup(
-                        pipe_t::read_end(), STDIN_FILENO);
+                err_pipe.close(pipe_t::read_end());
+                pipe_buf_.stdin_pipe().close(pipe_t::write_end());
+                pipe_buf_.stdout_pipe().close(pipe_t::read_end());
+                pipe_buf_.stdout_pipe().dup(pipe_t::write_end(), STDOUT_FILENO);
+                err_buf_.stdout_pipe().close(pipe_t::read_end());
+                err_buf_.stdout_pipe().dup(pipe_t::write_end(), STDERR_FILENO);
+
+                if (read_from_)
+                {
+                    // NOTE: recursive_close_stdin has no throwing version.
+                    read_from_->recursive_close_stdin(nothrow{});
+
+                    pipe_buf_.stdin_pipe().close(pipe_t::read_end());
+                    read_from_->pipe_buf_.stdout_pipe().dup(
+                            pipe_t::read_end(), STDIN_FILENO);
+                }
+                else
+                {
+                    pipe_buf_.stdin_pipe().dup(pipe_t::read_end(), STDIN_FILENO);
+                }
+
+                std::vector<char*> args;
+                args.reserve(args_.size() + 1);
+                for (auto& arg : args_)
+                    args.push_back(const_cast<char*>(arg.c_str()));
+                args.push_back(nullptr);
+
+                limits_.set_limits();
+                execvp(args[0], args.data());
             }
-            else
+            catch(const std::exception & x)
             {
-                pipe_buf_.stdin_pipe().dup(pipe_t::read_end(), STDIN_FILENO);
+                reason = failure_reason::standard_exception;
+                std::strncpy(error_message.data(), x.what(),
+                        error_message_buffer_size - 1u);
+            }
+            catch(...)
+            {
+                reason = failure_reason::unknown_exception;
             }
 
-            std::vector<char*> args;
-            args.reserve(args_.size() + 1);
-            for (auto& arg : args_)
-                args.push_back(const_cast<char*>(arg.c_str()));
-            args.push_back(nullptr);
+            //FIXME: this format should be documented!
+            char reason_image[sizeof(reason)];
+            std::memcpy(reason_image, &reason, sizeof(reason));
+            (void)err_pipe.write(nothrow{}, reason_image, sizeof(reason));
 
-            limits_.set_limits();
-            execvp(args[0], args.data());
+            switch(reason)
+            {
+                case failure_reason::standard_exception: {
+                    (void)err_pipe.write(nothrow{}, error_message.data(),
+                            error_message_buffer_size);
+                }
+                break;
 
-            char err[sizeof(int)];
-            std::memcpy(err, &errno, sizeof(int));
-            (void)err_pipe.write(nothrow{}, err, sizeof(int));
+                case failure_reason::unknown_exception: break; // Nothing to do.
+
+                case failure_reason::execvp_failure: {
+                    char err[sizeof(int)];
+                    std::memcpy(err, &errno, sizeof(int));
+                    (void)err_pipe.write(nothrow{}, err, sizeof(int));
+                }
+            }
+
             (void)err_pipe.close(nothrow{});
             std::_Exit(EXIT_FAILURE);
         }
         else
         {
+//FIXME: this code fragment is too long!
             // NOTE: the pid of the child should be stored.
             // It marks the `process` object as `started`. And that allows
             // to wait for the child process, check its status, kill it
@@ -807,19 +845,57 @@ public:
                         nothrow{}, pipe_t::read_end());
             }
 
-            char err[sizeof(int)];
-            auto read_result = err_pipe.read(nothrow{}, err, sizeof(int));
-            if (!read_result.first && read_result.second == sizeof(int))
+            constexpr std::size_t reason_image_size = sizeof(failure_reason);
+            char reason_image[reason_image_size];
+            auto read_result = err_pipe.read(nothrow{},
+                    reason_image, reason_image_size);
+            if (!read_result.first && read_result.second == reason_image_size)
             {
-                //FIXME: should wait() be called before throwing an exception?
-                int ec = 0;
-                std::memcpy(&ec, err, sizeof(int));
-                throw exception{"Failed to exec process: "
-                        + details::error_code_from_errno(ec).message()};
-            }
-            else
-            {
-                (void)err_pipe.close(nothrow{});
+                failure_reason reason;
+                std::memcpy(&reason, reason_image, reason_image_size);
+
+                if (failure_reason::standard_exception == reason)
+                {
+                    std::array<char, error_message_buffer_size> error_message;
+                    read_result = err_pipe.read(nothrow{},
+                            error_message.data(),
+                            error_message_buffer_size);
+                    if (!read_result.first &&
+                            read_result.second == error_message_buffer_size)
+                    {
+                        throw exception("exception in child: " + std::string{
+                                error_message.data(), error_message.size()});
+                    }
+                    else
+                        throw exception("exception in child (description is "
+                                "not available)");
+                }
+                else if (failure_reason::unknown_exception == reason)
+                {
+                    throw exception("unknown exception in child (description "
+                            "is not available)");
+                }
+                else if (failure_reason::execvp_failure == reason)
+                {
+                    std::array<char, sizeof(int)> errno_image;
+                    read_result = err_pipe.read(nothrow{},
+                            errno_image.data(),
+                            errno_image.size());
+                    if (!read_result.first &&
+                            read_result.second == errno_image.size())
+                    {
+                        int ec;
+                        std::memcpy(&ec, errno_image.data(), sizeof(int));
+                        details::throw_on_error<exception>(
+                                "execvp failure: ",
+                                details::error_code_from_errno(ec));
+                    }
+                    else
+                        throw exception("execvp failure (description is "
+                                "not available)");
+                }
+                else
+                    throw exception("unknown failure in child");
             }
         }
     }
