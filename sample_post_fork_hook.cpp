@@ -7,9 +7,12 @@ int main()
     std::cout << "Sample PID: " << getpid() << std::endl;
 
     procxx::process ping( "ping", "www.google.com", "-c", "2" );
-    ping.exec( [] {
-        std::cout << "Child PID: " << getpid() << std::endl;
-        std::cout << "Parent PID: " << getppid() << std::endl;
+    ping.exec( [](procxx::process::hook_place where) {
+        if(procxx::process::hook_place::child == where)
+        {
+            std::cout << "Child PID: " << getpid() << std::endl;
+            std::cout << "Parent PID: " << getppid() << std::endl;
+        }
     } );
 
     std::string line;

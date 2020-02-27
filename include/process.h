@@ -64,7 +64,7 @@ error_code_from_errno(int errno_v)
 template<typename Lambda>
 PROCXXRV_NODISCARD
 std::error_code
-first_of_errors(Lambda && action)
+run_as_sequence(Lambda && action)
 {
     const std::error_code rc = action(); // Just for type-checking.
     return rc;
@@ -73,12 +73,12 @@ first_of_errors(Lambda && action)
 template<typename Lambda, typename... Tail>
 PROCXXRV_NODISCARD
 std::error_code
-first_of_errors(
+run_as_sequence(
     Lambda && action,
     Tail && ...tail)
 {
     const std::error_code rc1 = action();
-    const std::error_code rc2 = first_of_errors(std::forward<Tail>(tail)...);
+    const std::error_code rc2 = run_as_sequence(std::forward<Tail>(tail)...);
     return rc1 ? rc1 : rc2;
 }
 
@@ -171,8 +171,10 @@ public:
         static std::mutex mutex;
         std::lock_guard<std::mutex> lock{mutex};
 
-        //FIXME: the result of that function should be checked!
-        ::pipe(&pipe_[0]);
+        if(-1 == ::pipe(&pipe_[0]))
+            details::throw_on_error<exception>(
+                    "pipe failure: ",
+                    details::error_code_from_errno(errno));
 
         auto flags = ::fcntl(pipe_[0], F_GETFD, 0);
         ::fcntl(pipe_[0], F_SETFD, flags | FD_CLOEXEC);
@@ -271,7 +273,7 @@ public:
     std::error_code
     close(nothrow nothr) noexcept
     {
-        return details::first_of_errors(
+        return details::run_as_sequence(
                 [&]{ return close(nothr, read_end()); },
                 [&]{ return close(nothr, write_end()); });
     }
@@ -344,7 +346,6 @@ public:
             return {};
     }
 
-//FIXME: should this method has a nothrow alternative?
     /**
      * Redirects the given file descriptor to the given end of the pipe.
      *
@@ -458,7 +459,6 @@ class pipe_ostreambuf : public std::streambuf
 
         if (read_result.first)
         {
-            //FIXME: additional information should be added to the exception.
             throw exception{"pipe read failure: "
                     + read_result.first.message()};
         }
@@ -515,9 +515,9 @@ class pipe_ostreambuf : public std::streambuf
     virtual void
     close(pipe_t::pipe_end end)
     {
-        auto ec = this->close(nothrow{}, end);
-        if (ec)
-            throw exception(ec.message());
+        details::throw_on_error<exception>(
+                "close(pipe_end) failure: ",
+                this->close(nothrow{}, end));
     }
 
   protected:
@@ -589,10 +589,10 @@ class pipe_streambuf : public pipe_ostreambuf
     std::error_code
     close(nothrow nothrow, pipe_t::pipe_end end) noexcept override
     {
-        return details::first_of_errors(
+        return details::run_as_sequence(
                 [&]{
                     if (end == pipe_t::write_end())
-                        return details::first_of_errors(
+                        return details::run_as_sequence(
                             [&]{ return flush(nothrow); },
                             [&]{ return stdin_pipe().close(
                                     nothrow, pipe_t::write_end()); });
@@ -605,9 +605,9 @@ class pipe_streambuf : public pipe_ostreambuf
     void
     close(pipe_t::pipe_end end) override
     {
-        auto rc = this->close(nothrow{}, end);
-        if (rc)
-            throw exception(rc.message());
+        details::throw_on_error<exception>(
+                "close(pipe_end) failure: ",
+                this->close(nothrow{}, end));
     }
 
   private:
@@ -640,9 +640,9 @@ class pipe_streambuf : public pipe_ostreambuf
     void
     flush() override
     {
-        const auto rc = flush(nothrow{});
-        if (rc)
-            throw exception{"flush failure: " + rc.message()};
+        details::throw_on_error<exception>(
+                "flush failure: ",
+                flush(nothrow{}));
     }
 
     pipe_t stdin_pipe_;
@@ -660,7 +660,10 @@ bool running(const process & pr);
  */
 class process
 {
-  public:
+public:
+    //FIXME: document this!
+    enum class hook_place { child, parent };
+
     /**
      * Constructs a new child process, executing the given application and
      * passing the given arguments to it.
@@ -700,6 +703,7 @@ class process
         read_from_ = &other;
     }
 
+//FIXME: document format of Hook.
     /**
      * Executes the process.
      *
@@ -732,7 +736,7 @@ class process
             // will think that the child is running until the status of
             // the child process will be checked.
             //
-            child_post_fork_hook();
+            child_post_fork_hook(hook_place::child);
 
             err_pipe.close(pipe_t::read_end());
             pipe_buf_.stdin_pipe().close(pipe_t::write_end());
@@ -777,6 +781,9 @@ class process
             // to wait for the child process, check its status, kill it
             // and so on.
             pid_ = pid;
+
+            //FIXME: should exceptions to be handled?
+            child_post_fork_hook(hook_place::parent);
 
             //
             // NOTE: non-throwing versions are used here.
@@ -823,7 +830,7 @@ class process
     void
     exec()
     {
-       this->exec([]{});
+       this->exec([](hook_place){});
     }
 
     /**
@@ -927,7 +934,7 @@ class process
         std::error_code rc{};
         if (!waited_)
         {
-            rc = details::first_of_errors(
+            rc = details::run_as_sequence(
                     [&]{ return pipe_buf_.close(
                             nothrow{}, pipe_t::write_end()); },
                     [&]{ return err_buf_.close(
@@ -1039,7 +1046,7 @@ class process
     std::error_code
     close(nothrow nothr, pipe_t::pipe_end end) noexcept
     {
-        return details::first_of_errors(
+        return details::run_as_sequence(
                 [&]{ return pipe_buf_.close(nothr, end); },
                 [&]{ return err_buf_.close(nothr, end); });
     }
