@@ -257,7 +257,7 @@ public:
     PROCXXRV_NODISCARD
     std::pair<std::error_code, ssize_t>
     read(
-        nothrow, char* buf, uint64_t length) noexcept
+        nothrow, char* buf, std::size_t length) noexcept
     {
         auto bytes = ::read(pipe_[pipe_t::read_end()], buf, length);
         if (-1 == bytes)
@@ -407,6 +407,65 @@ public:
   private:
     std::array<int, 2> pipe_;
 };
+
+namespace details
+{
+
+//FIXME: document this!
+template<typename Scalar>
+struct io_helper
+{
+    static
+    PROCXXRV_NODISCARD
+    std::pair<std::error_code, Scalar>
+    try_read_from(pipe_t & pipe) noexcept
+    {
+        std::array<char, sizeof(Scalar)> buffer;
+        const auto read_result = pipe.read(
+                nothrow{}, buffer.data(), buffer.size());
+        if (!read_result.first)
+        {
+            if (read_result.second == buffer.size())
+            {
+                Scalar value;
+                std::memcpy(&value, buffer.data(), buffer.size());
+                return std::make_pair(read_result.first, value);
+            }
+            else
+                return std::make_pair(
+                        std::make_error_code(std::errc::no_message_available),
+                        Scalar{});
+        }
+        else
+            return std::make_pair(read_result.first, Scalar{});
+    }
+};
+
+template<std::size_t N>
+struct io_helper<std::array<char, N>>
+{
+    using array_type = std::array<char, N>;
+
+    static
+    PROCXXRV_NODISCARD
+    std::pair<std::error_code, array_type>
+    try_read_from(pipe_t & pipe) noexcept
+    {
+        std::pair<std::error_code, array_type> result;
+        const auto read_result = pipe.read(nothrow{},
+                result.second.data(), result.second.size());
+        if (!read_result.first && read_result.second != result.second.size())
+        {
+            result.first = std::make_error_code(std::errc::no_message_available);
+        }
+        else
+            result.first = read_result.first;
+
+        return result;
+    }
+};
+
+} /* namespace details */
 
 /**
  * Streambuf for reading/writing to pipes.
@@ -1172,49 +1231,39 @@ public:
 
         close_pipes_in_parent(err_pipe);
 
-        std::array<char, sizeof(failure_reason)> reason_image;
-        auto read_result = err_pipe.read(nothrow{},
-                reason_image.data(), reason_image.size());
-        if (!read_result.first && read_result.second == reason_image.size())
+        const auto try_reason = details::io_helper<failure_reason>::
+                try_read_from(err_pipe);
+        if (!try_reason.first)
         {
-            failure_reason reason;
-            std::memcpy(&reason, reason_image.data(), reason_image.size());
-
-            if (failure_reason::standard_exception == reason)
+            if (failure_reason::standard_exception == try_reason.second)
             {
-                std::array<char, error_message_buffer_size> error_message;
-                read_result = err_pipe.read(nothrow{},
-                        error_message.data(),
-                        error_message.size());
-                if (!read_result.first &&
-                        read_result.second == error_message.size())
+                const auto try_error_message = details::io_helper<
+                        std::array<char, error_message_buffer_size>
+                    >::try_read_from(err_pipe);
+                if (!try_error_message.first)
                 {
+                    const auto & msg = try_error_message.second;
                     throw exception("exception in child: " + std::string{
-                            error_message.data(), error_message.size()});
+                            msg.data(), msg.size()});
                 }
                 else
                     throw exception("exception in child (description is "
                             "not available)");
             }
-            else if (failure_reason::unknown_exception == reason)
+            else if (failure_reason::unknown_exception == try_reason.second)
             {
                 throw exception("unknown exception in child (description "
                         "is not available)");
             }
-            else if (failure_reason::execvp_failure == reason)
+            else if (failure_reason::execvp_failure == try_reason.second)
             {
-                std::array<char, sizeof(int)> errno_image;
-                read_result = err_pipe.read(nothrow{},
-                        errno_image.data(),
-                        errno_image.size());
-                if (!read_result.first &&
-                        read_result.second == errno_image.size())
+                const auto try_errno = details::io_helper<int>::
+                    try_read_from(err_pipe);
+                if (!try_errno.first)
                 {
-                    int ec;
-                    std::memcpy(&ec, errno_image.data(), sizeof(int));
                     details::throw_on_error<exception>(
                             "execvp failure: ",
-                            details::error_code_from_errno(ec));
+                            details::error_code_from_errno(try_errno.second));
                 }
                 else
                     throw exception("execvp failure (description is "
