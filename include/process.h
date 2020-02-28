@@ -411,10 +411,24 @@ public:
 namespace details
 {
 
-//FIXME: document this!
+/**
+ * Helper class for reading and writing values from/to a pipe.
+ *
+ * @note
+ * This implementation is for working with scalar values like
+ * `process::failure_reason` or `errno`.
+ */
 template<typename Scalar>
 struct io_helper
 {
+    /**
+     * Try read a value from a pipe.
+     *
+     * @note
+     * std::pair<std::error_code,Scalar>::second in returned value
+     * will hold an actual value from pipe only if read operation
+     * completed successfully.
+     */
     PROCXXRV_NODISCARD
     static
     std::pair<std::error_code, Scalar>
@@ -451,11 +465,25 @@ struct io_helper
     }
 };
 
+/**
+ * Helper class for reading and writing values from/to a pipe.
+ *
+ * @note
+ * This implementation is for working with values of type std::array<char, N>.
+ */
 template<std::size_t N>
 struct io_helper<std::array<char, N>>
 {
     using array_type = std::array<char, N>;
 
+    /**
+     * Try read a value from a pipe.
+     *
+     * @note
+     * std::pair<std::error_code,array_type>::second in returned value
+     * will hold an actual value from pipe only if read operation
+     * completed successfully.
+     */
     PROCXXRV_NODISCARD
     static
     std::pair<std::error_code, array_type>
@@ -737,19 +765,29 @@ bool running(const process & pr);
  */
 class process
 {
-    //FIXME: document this!
+    /**
+     * The reason of the failure of launching a new process.
+     */
     enum class failure_reason : int
     {
+        /// Some exception derived from `std::exception` is thrown
+        /// during the preparation to call `execvp`.
         standard_exception = 0,
+        /// Some exception that is not derived from `std::exception` is throw
+        /// during the preparation to call `execvp`.
         unknown_exception = 1,
+        /// A call to `execvp` failed.
         execvp_failure = 2
     };
 
-    //FIXME: document this!
+    /// The maximum size of buffer for error message transfered from
+    /// a child process to the parent.
     static constexpr std::size_t error_message_buffer_size = 128;
 
 public:
-    //FIXME: document this!
+    /// An indicator for post_fork_hook.
+    /// Value of this type is passed to post_fork_hook after a successful
+    /// call to fork().
     enum class hook_place { child, parent };
 
     /**
@@ -766,14 +804,14 @@ public:
         // nothing
     }
 
-    /*
+    /**
      * Adds an argument to the argument-list
      */
     void add_argument(std::string arg) {
         args_.push_back(std::move(arg));
     }
 
-    /*
+    /**
      * Add further arguments to the argument-list
      */
     template<typename InputIterator>
@@ -1233,7 +1271,24 @@ public:
         failure_reason reason,
         std::array<char, error_message_buffer_size> error_message) noexcept
     {
-        //FIXME: this format should be documented!
+        // The data-exchange format is:
+        //
+        // Mandatory value *reason* of type `failure_reason`.
+        // Reason of a failure in a child process.
+        //
+        // All consequent content depends on the value of *reason*.
+        //
+        // If *reason* is failure_reason::standard_exception then there
+        // is a byte block of `error_message_buffer_size` bytes with
+        // error message. Error message contains at least one trailing
+        // zero byte.
+        //
+        // If *reason* is failure_reason::unknown_exception then there is
+        // no more data.
+        //
+        // If *reason* is failure_reason::execvp_failure then there is
+        // mandatory *errno_value* of type `int`.
+        //
         (void)details::io_helper<failure_reason>::try_write_to(
                 err_pipe, reason);
 
