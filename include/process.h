@@ -791,11 +791,31 @@ public:
         read_from_ = &other;
     }
 
-//FIXME: document format of Hook.
     /**
      * Executes the process.
      *
      * This method calls post_fork_hook just after the return from fork().
+     *
+     * Hook should be a function or functional object with the following
+     * signature:
+     * @code
+     * void(hook_place where);
+     * @endcode
+     * For example:
+     * @code
+     * procxx::process child{...};
+     * child.exec([&](procxx::process::hook_place where) {
+     *     if(procxx::process::hook_place::child == where) {
+     *         ... // Some child-specific actions.
+     *     }
+     * });
+     * @endcode
+     *
+     * @note
+     * If \a post_fork_hook throws an exception in child process then
+     * launching of a new process will be aborted. But if \a post_fork_hook
+     * will throw in the parent process then the exception thrown will
+     * just be ignored.
      */
     template<typename Hook>
     void
@@ -1242,8 +1262,8 @@ public:
         Hook && post_fork_hook,
         pipe_t & err_pipe)
     {
-        //FIXME: should exceptions to be handled?
-        post_fork_hook(hook_place::parent);
+        // NOTE: an exception from this hook will be discarded.
+        try { post_fork_hook(hook_place::parent); } catch(...) {}
 
         close_pipes_in_parent(err_pipe);
 
