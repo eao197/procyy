@@ -415,8 +415,8 @@ namespace details
 template<typename Scalar>
 struct io_helper
 {
-    static
     PROCXXRV_NODISCARD
+    static
     std::pair<std::error_code, Scalar>
     try_read_from(pipe_t & pipe) noexcept
     {
@@ -439,6 +439,16 @@ struct io_helper
         else
             return std::make_pair(read_result.first, Scalar{});
     }
+
+    PROCXXRV_NODISCARD
+    static
+    std::error_code
+    try_write_to(pipe_t & pipe, const Scalar & value) noexcept
+    {
+        std::array<char, sizeof(Scalar)> buffer;
+        std::memcpy(buffer.data(), &value, buffer.size());
+        return pipe.write(nothrow{}, buffer.data(), buffer.size());
+    }
 };
 
 template<std::size_t N>
@@ -446,8 +456,8 @@ struct io_helper<std::array<char, N>>
 {
     using array_type = std::array<char, N>;
 
-    static
     PROCXXRV_NODISCARD
+    static
     std::pair<std::error_code, array_type>
     try_read_from(pipe_t & pipe) noexcept
     {
@@ -462,6 +472,14 @@ struct io_helper<std::array<char, N>>
             result.first = read_result.first;
 
         return result;
+    }
+
+    PROCXXRV_NODISCARD
+    static
+    std::error_code
+    try_write_to(pipe_t & pipe, const array_type & value) noexcept
+    {
+        return pipe.write(nothrow{}, value.data(), value.size());
     }
 };
 
@@ -1196,24 +1214,22 @@ public:
         std::array<char, error_message_buffer_size> error_message) noexcept
     {
         //FIXME: this format should be documented!
-        char reason_image[sizeof(reason)];
-        std::memcpy(reason_image, &reason, sizeof(reason));
-        (void)err_pipe.write(nothrow{}, reason_image, sizeof(reason));
+        (void)details::io_helper<failure_reason>::try_write_to(
+                err_pipe, reason);
 
         switch(reason)
         {
             case failure_reason::standard_exception: {
-                (void)err_pipe.write(nothrow{}, error_message.data(),
-                        error_message_buffer_size);
+                (void)details::io_helper<
+                        std::array<char, error_message_buffer_size>
+                    >::try_write_to(err_pipe, error_message);
             }
             break;
 
             case failure_reason::unknown_exception: break; // Nothing to do.
 
             case failure_reason::execvp_failure: {
-                char err[sizeof(int)];
-                std::memcpy(err, &errno, sizeof(int));
-                (void)err_pipe.write(nothrow{}, err, sizeof(int));
+                (void)details::io_helper<int>::try_write_to(err_pipe, errno);
             }
         }
 
