@@ -34,17 +34,17 @@
 
 // Try to use __has_cpp_attribute if it is supported.
 #if defined(__has_cpp_attribute)
-	// clang-4 and clang-5 produce warnings when [[nodiscard]]
-	// is used with -std=c++11 and -std=c++14.
-	#if __has_cpp_attribute(nodiscard) && \
-			!(defined(__clang__) && __cplusplus < 201703L)
-		#define PROCXXRV_NODISCARD [[nodiscard]]
-	#endif
+    // clang-4 and clang-5 produce warnings when [[nodiscard]]
+    // is used with -std=c++11 and -std=c++14.
+    #if __has_cpp_attribute(nodiscard) && \
+            !(defined(__clang__) && __cplusplus < 201703L)
+        #define PROCXXRV_NODISCARD [[nodiscard]]
+    #endif
 #endif
 
 // Handle the result of __has_cpp_attribute.
 #if !defined( PROCXXRV_NODISCARD )
-	#define PROCXXRV_NODISCARD
+    #define PROCXXRV_NODISCARD
 #endif
 
 namespace procxx
@@ -90,6 +90,42 @@ throw_on_error(
 {
     if (ec)
         throw Exception{what + ec.message()};
+}
+
+//FIXME: document this!
+template<typename Status_Handler>
+PROCXXRV_NODISCARD
+std::pair<std::error_code, bool>
+is_running(pid_t pid, Status_Handler && handler) noexcept
+{
+    std::error_code ec{};
+    bool result = false;
+    if (pid != -1)
+    {
+        if (0 == ::kill(pid, 0))
+        {
+            int status;
+            const auto r = ::waitpid(pid, &status, WNOHANG);
+            if (-1 == r)
+            {
+                ec = error_code_from_errno(errno);
+            }
+            if (r == pid)
+            {
+                // Process has changed its state. We must detect why.
+                result = !WIFEXITED(status) && !WIFSIGNALED(status);
+
+                // User-provided status-handler should be invoked to.
+                handler(status);
+            }
+            else
+                // No changes in the process status. It means that
+                // process is running.
+                result = true;
+        }
+    }
+
+    return std::make_pair(ec, result);
 }
 
 } /* namespace details */
@@ -756,10 +792,6 @@ class pipe_streambuf : public pipe_ostreambuf
 
 class process;
 
-// Forward declaration. Will be defined later.
-bool running(pid_t pid);
-bool running(const process & pr);
-
 /**
  * A handle that represents a child process.
  */
@@ -1041,9 +1073,17 @@ public:
      */
     PROCXXRV_NODISCARD
     bool
-    running() const
+    running()
     {
-        return ::procxx::running(*this);
+        const auto r = details::is_running(id(), [this](int status) {
+                status_ = status;
+                pid_ = -1;
+                waited_ = true;
+                });
+        if(r.first)
+            throw exception("Failed to check process state: "
+                    + r.first.message());
+        return r.second;
     }
 
     /**
@@ -1503,46 +1543,18 @@ inline pipeline operator|(process& first, process& second)
     return p | second;
 }
 
-//FIXME: should this function has a nothrow alternative?
 /**
  * Determines if process is running (zombies are seen as running).
  */
+PROCXXRV_NODISCARD
 inline bool
 running(pid_t pid)
 {
-    bool result = false;
-    if (pid != -1)
-    {
-        if (0 == ::kill(pid, 0))
-        {
-            int status;
-            const auto r = ::waitpid(pid, &status, WNOHANG);
-            if (-1 == r)
-            {
-                throw process::exception{"Failed to check process state "
-                    "by waitpid(): "
-                    + std::system_category().message(errno)};
-            }
-            if (r == pid)
-                // Process has changed its state. We must detect why.
-                result = !WIFEXITED(status) && !WIFSIGNALED(status);
-            else
-                // No changes in the process status. It means that
-                // process is running.
-                result = true;
-        }
-    }
-
-    return result;
-}
-
-/**
- * Determines if process is running (zombies are seen as running).
- */
-inline bool
-running(const process & pr)
-{
-    return running(pr.id());
+    const auto r = details::is_running(pid, [](int){});
+    if(r.first)
+        throw process::exception("Failed to check process state: "
+            + r.first.message());
+    return r.second;
 }
 
 }
