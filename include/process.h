@@ -92,7 +92,25 @@ throw_on_error(
         throw Exception{what + ec.message()};
 }
 
-//FIXME: document this!
+/**
+ * An attempt to check the status of running process.
+ *
+ * Status-handler \a handler is called if `waitpid` tells that
+ * the status of the process \a pid has been changed.
+ *
+ * Status-handler \a handler should be a function or a functor with
+ * the following format:
+ * @code
+ * void(int status);
+ * @endcode
+ *
+ * @note
+ * Zombies are seen as running.
+ *
+ * @attention
+ * The `second` field of the returned value has an actual value only
+ * if `first` doesn't indicate an error.
+ */
 template<typename Status_Handler>
 PROCXXRV_NODISCARD
 std::pair<std::error_code, bool>
@@ -1070,6 +1088,21 @@ public:
 
     /**
      * Determines if process is running.
+     *
+     * @note
+     * There is a call to `waitpid` under the hood. So if this function
+     * returns `false` then the internal state of `process` instance
+     * can be changed. For example:
+     * @code
+     * procxx::process pr{...};
+     * pr.exec();
+     * assert(!pr.waited());
+     * ...
+     * if(!pr.running()) {
+     *   assert(pr.waited()); // But wait() wasn't called explicitely.
+     *   ...
+     * }
+     * @endcode
      */
     PROCXXRV_NODISCARD
     bool
@@ -1545,6 +1578,11 @@ inline pipeline operator|(process& first, process& second)
 
 /**
  * Determines if process is running (zombies are seen as running).
+ *
+ * @note
+ * There is a call to `waitpid` under the hood. So if this function
+ * returns `false` then a subsequent call to `waitpid` for the same
+ * PID can fail.
  */
 PROCXXRV_NODISCARD
 inline bool
