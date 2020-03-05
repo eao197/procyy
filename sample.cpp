@@ -4,14 +4,14 @@
 
 int main()
 {
-    procxx::process ping( "ping", "www.google.com", "-c", "2" );
+    procyy::process ping( "ping", "www.google.com", "-c", "2" );
     ping.exec();
 
     std::string line;
     while( std::getline( ping.output(), line ) )
     {
         std::cout << line << std::endl;
-        if( !ping.running() || !procxx::running(ping.id()) || !running(ping) )
+        if( !ping.running() )
         {
             std::cout << "not running any more" << std::endl;
             break;

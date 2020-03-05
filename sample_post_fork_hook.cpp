@@ -6,9 +6,9 @@ int main()
 {
     std::cout << "Sample PID: " << getpid() << std::endl;
 
-    procxx::process ping( "ping", "www.google.com", "-c", "2" );
-    ping.exec( [](procxx::process::hook_place where) {
-        if(procxx::process::hook_place::child == where)
+    procyy::process ping( "ping", "www.google.com", "-c", "2" );
+    ping.exec( [](procyy::process::hook_place where) {
+        if(procyy::process::hook_place::child == where)
         {
             std::cout << "Child PID: " << getpid() << std::endl;
             std::cout << "Parent PID: " << getppid() << std::endl;
@@ -19,7 +19,7 @@ int main()
     while( std::getline( ping.output(), line ) )
     {
         std::cout << line << std::endl;
-        if( !ping.running() || !procxx::running(ping.id()) || !running(ping) )
+        if( !ping.running() )
         {
             std::cout << "not running any more" << std::endl;
             break;

@@ -1,14 +1,15 @@
 /**
  * @file process.h
  * @author Chase Geigle
+ * @author Yauheni Akhotnikau
  *
  * A simple, header-only process/pipe library for C++ on UNIX platforms.
  *
  * Released under the MIT license (see LICENSE).
  */
 
-#ifndef PROCXX_PROCESS_H_
-#define PROCXX_PROCESS_H_
+#ifndef PROCYY_PROCESS_H_
+#define PROCYY_PROCESS_H_
 
 #include <sys/resource.h>
 #include <sys/time.h>
@@ -38,23 +39,23 @@
     // is used with -std=c++11 and -std=c++14.
     #if __has_cpp_attribute(nodiscard) && \
             !(defined(__clang__) && __cplusplus < 201703L)
-        #define PROCXXRV_NODISCARD [[nodiscard]]
+        #define PROCYY_NODISCARD [[nodiscard]]
     #endif
 #endif
 
 // Handle the result of __has_cpp_attribute.
-#if !defined( PROCXXRV_NODISCARD )
-    #define PROCXXRV_NODISCARD
+#if !defined( PROCYY_NODISCARD )
+    #define PROCYY_NODISCARD
 #endif
 
-namespace procxx
+namespace procyy
 {
 
 namespace details
 {
 
 // See https://stackoverflow.com/questions/13950938/construct-stderror-code-from-errno-on-posix-and-getlasterror-on-windows
-PROCXXRV_NODISCARD
+PROCYY_NODISCARD
 inline std::error_code
 error_code_from_errno(int errno_v)
 {
@@ -62,7 +63,7 @@ error_code_from_errno(int errno_v)
 }
 
 template<typename Lambda>
-PROCXXRV_NODISCARD
+PROCYY_NODISCARD
 std::error_code
 run_as_sequence(Lambda && action)
 {
@@ -71,7 +72,7 @@ run_as_sequence(Lambda && action)
 }
 
 template<typename Lambda, typename... Tail>
-PROCXXRV_NODISCARD
+PROCYY_NODISCARD
 std::error_code
 run_as_sequence(
     Lambda && action,
@@ -112,7 +113,7 @@ throw_on_error(
  * if `first` doesn't indicate an error.
  */
 template<typename Status_Handler>
-PROCXXRV_NODISCARD
+PROCYY_NODISCARD
 std::pair<std::error_code, bool>
 is_running(pid_t pid, Status_Handler && handler) noexcept
 {
@@ -196,7 +197,7 @@ public:
     /**
      * Gets a pipe_end representing the read end of a pipe.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     static constexpr pipe_end
     read_end() noexcept
     {
@@ -206,7 +207,7 @@ public:
     /**
      * Gets a pipe_end representing the write end of a pipe.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     static constexpr pipe_end
     write_end() noexcept
     {
@@ -258,7 +259,7 @@ public:
      * @param buf the buffer to get bytes from
      * @param length the number of bytes to write
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::error_code
     write(
         nothrow, const char* buf, std::size_t length) noexcept
@@ -308,7 +309,7 @@ public:
      * @param length the maximum number of bytes to read
      * @return the actual number of bytes read
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::pair<std::error_code, ssize_t>
     read(
         nothrow, char* buf, std::size_t length) noexcept
@@ -323,7 +324,7 @@ public:
     /**
      * Closes both ends of the pipe.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::error_code
     close(nothrow nothr) noexcept
     {
@@ -346,7 +347,7 @@ public:
     /**
      * Closes a specific end of the pipe.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::error_code
     close(nothrow, pipe_end end) noexcept
     {
@@ -377,7 +378,7 @@ public:
     /**
      * Determines if an end of the pipe is still open.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     bool
     open(pipe_end end) noexcept
     {
@@ -390,7 +391,7 @@ public:
      * @param end the end of the pipe to connect to the file descriptor
      * @param fd the file descriptor to connect
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::error_code
     dup(nothrow, pipe_end end, int fd) noexcept
     {
@@ -420,7 +421,7 @@ public:
      * @param end the end of the pipe to redirect
      * @param other the pipe to redirect to the current pipe
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::error_code
     dup(nothrow nothr, pipe_end end, pipe_t& other) noexcept
     {
@@ -483,7 +484,7 @@ struct io_helper
      * will hold an actual value from pipe only if read operation
      * completed successfully.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     static
     std::pair<std::error_code, Scalar>
     try_read_from(pipe_t & pipe) noexcept
@@ -508,7 +509,7 @@ struct io_helper
             return std::make_pair(read_result.first, Scalar{});
     }
 
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     static
     std::error_code
     try_write_to(pipe_t & pipe, const Scalar & value) noexcept
@@ -538,7 +539,7 @@ struct io_helper<std::array<char, N>>
      * will hold an actual value from pipe only if read operation
      * completed successfully.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     static
     std::pair<std::error_code, array_type>
     try_read_from(pipe_t & pipe) noexcept
@@ -556,7 +557,7 @@ struct io_helper<std::array<char, N>>
         return result;
     }
 
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     static
     std::error_code
     try_write_to(pipe_t & pipe, const array_type & value) noexcept
@@ -642,7 +643,7 @@ class pipe_ostreambuf : public std::streambuf
     /**
      * Gets the stdout pipe.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     pipe_t&
     stdout_pipe() noexcept
     {
@@ -655,7 +656,7 @@ class pipe_ostreambuf : public std::streambuf
      *
      * NOTE: this method doesn't throw.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     virtual std::error_code
     close(nothrow, pipe_t::pipe_end end) noexcept
     {
@@ -680,7 +681,7 @@ class pipe_ostreambuf : public std::streambuf
     }
 
   protected:
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     virtual std::error_code
     flush(nothrow) noexcept { return {}; }
 
@@ -737,14 +738,14 @@ class pipe_streambuf : public pipe_ostreambuf
     /**
      * Gets the stdin pipe.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     pipe_t&
     stdin_pipe() noexcept
     {
         return stdin_pipe_;
     }
 
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::error_code
     close(nothrow nothrow, pipe_t::pipe_end end) noexcept override
     {
@@ -891,9 +892,9 @@ public:
      * @endcode
      * For example:
      * @code
-     * procxx::process child{...};
-     * child.exec([&](procxx::process::hook_place where) {
-     *     if(procxx::process::hook_place::child == where) {
+     * procyy::process child{...};
+     * child.exec([&](procyy::process::hook_place where) {
+     *     if(procyy::process::hook_place::child == where) {
      *         ... // Some child-specific actions.
      *     }
      * });
@@ -967,7 +968,7 @@ public:
     /**
      * Gets the process id.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     pid_t
     id() const noexcept
     {
@@ -1039,7 +1040,7 @@ public:
     /**
      * Waits for the child to exit.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::error_code
     wait(nothrow) noexcept
     {
@@ -1079,7 +1080,7 @@ public:
     /**
      * It wait() already called?
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     bool
     waited() const noexcept
     {
@@ -1094,7 +1095,7 @@ public:
      * returns `false` then the internal state of `process` instance
      * can be changed. For example:
      * @code
-     * procxx::process pr{...};
+     * procyy::process pr{...};
      * pr.exec();
      * assert(!pr.waited());
      * ...
@@ -1104,7 +1105,7 @@ public:
      * }
      * @endcode
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     bool
     running()
     {
@@ -1122,7 +1123,7 @@ public:
     /**
      * Determines if the child exited properly.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     bool
     exited() const
     {
@@ -1134,7 +1135,7 @@ public:
     /**
      * Determines if the child was killed.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     bool
     killed() const
     {
@@ -1146,7 +1147,7 @@ public:
     /**
      * Determines if the child was stopped.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     bool
     stopped() const
     {
@@ -1159,7 +1160,7 @@ public:
      * Gets the exit code for the child. If it was killed or stopped, the
      * signal that did so is returned instead.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     int
     code() const
     {
@@ -1177,7 +1178,7 @@ public:
     /**
      * Closes the given end of the pipe.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::error_code
     close(nothrow nothr, pipe_t::pipe_end end) noexcept
     {
@@ -1209,7 +1210,7 @@ public:
     /**
      * Conversion to std::ostream.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::ostream&
     input() noexcept
     {
@@ -1219,7 +1220,7 @@ public:
     /**
      * Conversion to std::istream.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::istream&
     output() noexcept
     {
@@ -1229,7 +1230,7 @@ public:
     /**
      * Conversion to std::istream.
      */
-    PROCXXRV_NODISCARD
+    PROCYY_NODISCARD
     std::istream&
     error() noexcept
     {
@@ -1584,7 +1585,7 @@ inline pipeline operator|(process& first, process& second)
  * returns `false` then a subsequent call to `waitpid` for the same
  * PID can fail.
  */
-PROCXXRV_NODISCARD
+PROCYY_NODISCARD
 inline bool
 running(pid_t pid)
 {
