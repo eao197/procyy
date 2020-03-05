@@ -171,6 +171,14 @@ be called).
 If a callback function throws in the parent process then the exception thrown
 will just be ignored.
 
+## There is no free function running(process)
+
+There is no more free function `running()` that accepts a reference to
+`process` class. The `process::running()` method should be used instead.  It's
+becase `running` can change the state of `process` instance (`waitpid` is
+called inside `running` and this call changes `waited` flag inside `process`
+instance).
+
 ## An extended way of posting errors from a child process to the parent
 
 The procxx library uses additional pipe to report of `execvp` call error to the
