@@ -192,19 +192,21 @@ written to that pipe (if the exception class is derived from `std::exception`
 this additional data will be the first 127 bytes of string returned by
 `std::exception::what()`.
 
-## pipe2 is not used in this version of procyy
+## Usage of pipe2 in this version of procyy
 
 The procxx library has `PROCXX_HAS_PIPE2` feature macro and use `pipe2` call in
-the constructor of `pipe_t` class.
+the constructor of `pipe_t` class if `PROCXX_HAS_PIPE2` is defined to non-zero
+value. And `PROCXX_HAS_PIPE2` is defined to 1 by default without an attempt to
+detect the current platform and the presence of `pipe2` call.
 
-The procyy library doesn't use `pipe2` call. It's because I'm in doubt about
-the portability of that function. It seems that `pipe2` is present in more or
-less modern Linuxes and FreeBSD starting from 10.0. But I don't know about
-macOS and can't check procyy on macOS or other types of Unixes.
+The procyy library has the similar `PROCYY_HAS_PIPE2` macro, but if it is not
+definied explicitly then procyy tries to detect the platform. It it is Linux or
+FreeBSD 10 or above then `PROCYY_HAS_PIPE2` will be automatically defined to 1
+and `pipe2` call will be used in the constructor of `procyy::pipe_t` class.
 
-Also, I'm using procyy in single-threaded applications only. So there is no
-problem with the usage of non-atomic `pipe`+`fcntl` calls instead of atomic
-`pipe2` call in my scenarios.
+If `PROCYY_HAS_PIPE2` is explicitly defined to 0, or if procyy is compiled on
+some different platform (like macOS) then `pipe`+`fcntl` will be used in the
+constructor of `procyy::pipe_t` class.
 
 If this is an issue for you please provide a PR.
 
