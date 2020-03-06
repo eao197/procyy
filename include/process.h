@@ -25,7 +25,6 @@
 #include <cstring>
 #include <functional>
 #include <istream>
-#include <mutex>
 #include <ostream>
 #include <stdexcept>
 #include <streambuf>
@@ -219,13 +218,6 @@ public:
      */
     pipe_t()
     {
-        // It seems that this mutex is necessary to avoid leaking
-        // of file descriptors without FD_CLOEXEC set if another
-        // thread calls fork()+exec().
-        //
-        static std::mutex mutex;
-        std::lock_guard<std::mutex> lock{mutex};
-
         if(-1 == ::pipe(&pipe_[0]))
             details::throw_on_error<exception>(
                     "pipe failure: ",

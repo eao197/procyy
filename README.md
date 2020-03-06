@@ -202,5 +202,23 @@ the portability of that function. It seems that `pipe2` is present in more or
 less modern Linuxes and FreeBSD starting from 10.0. But I don't know about
 macOS and can't check procyy on macOS or other types of Unixes.
 
+Also, I'm using procyy in single-threaded applications only. So there is no
+problem with the usage of non-atomic `pipe`+`fcntl` calls instead of atomic
+`pipe2` call in my scenarios.
+
 If this is an issue for you please provide a PR.
+
+### std::mutex is not used around a call to pipe()
+
+The procxx library uses a fallback to a sequence of `pipe` and `fcntl` calls if
+`pipe2` is not available. This sequence is guarded by a static mutex instance.
+This guard is intended to add some safety for multithreaded code (see some
+explanations
+[here](https://github.com/skystrife/procxx/commit/afe17ba37341528bbbee9d96c5b68b1fe154fad3)).
+
+But the problem is that I don't understand how this mutex can prevent the leak
+of pipe descriptors if another thread performs `fork`+`execvp`.
+
+So I think this mutex is just useless. And because of that the constructor if
+`procyy::pipe_t` doesn't use a lock of a mutex around calls to `pipe`+`fcntl`.
 
