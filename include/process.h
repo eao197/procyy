@@ -52,6 +52,10 @@
     #if defined(__linux__) || (defined(__FreeBSD__) && __FreeBSD__ >= 10)
         #define PROCYY_HAS_PIPE2 1
     #endif
+
+    #if !defined(PROCYY_HAS_PIPE2)
+        #define PROCYY_HAS_PIPE2 0
+    #endif
 #endif
 
 namespace procyy
