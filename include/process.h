@@ -47,6 +47,13 @@
     #define PROCYY_NODISCARD
 #endif
 
+// Detection of pipe2 call.
+#if !defined(PROCYY_HAS_PIPE2)
+    #if defined(__linux__) || (defined(__FreeBSD__) && __FreeBSD__ >= 10)
+        #define PROCYY_HAS_PIPE2 1
+    #endif
+#endif
+
 namespace procyy
 {
 
@@ -218,9 +225,15 @@ public:
      */
     pipe_t()
     {
+#if PROCYY_HAS_PIPE2
+        if(-1 == ::pipe2(&pipe_[0], O_CLOEXEC))
+            details::throw_on_error<exception>(
+                    "pipe2() failure: ",
+                    details::error_code_from_errno(errno));
+#else
         if(-1 == ::pipe(&pipe_[0]))
             details::throw_on_error<exception>(
-                    "pipe failure: ",
+                    "pipe() failure: ",
                     details::error_code_from_errno(errno));
 
         auto flags = ::fcntl(pipe_[0], F_GETFD, 0);
@@ -228,6 +241,7 @@ public:
 
         flags = ::fcntl(pipe_[1], F_GETFD, 0);
         ::fcntl(pipe_[1], F_SETFD, flags | FD_CLOEXEC);
+#endif
     }
 
     /**
