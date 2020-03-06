@@ -200,7 +200,7 @@ value. And `PROCXX_HAS_PIPE2` is defined to 1 by default without an attempt to
 detect the current platform and the presence of `pipe2` call.
 
 The procyy library has the similar `PROCYY_HAS_PIPE2` macro, but if it is not
-definied explicitly then procyy tries to detect the platform. It it is Linux or
+definied explicitly then procyy tries to detect the platform. If it is Linux or
 FreeBSD 10 or above then `PROCYY_HAS_PIPE2` will be automatically defined to 1
 and `pipe2` call will be used in the constructor of `procyy::pipe_t` class.
 
@@ -208,7 +208,7 @@ If `PROCYY_HAS_PIPE2` is explicitly defined to 0, or if procyy is compiled on
 some different platform (like macOS) then `pipe`+`fcntl` will be used in the
 constructor of `procyy::pipe_t` class.
 
-If this is an issue for you please provide a PR.
+If such behaviour is an issue for you please provide a PR.
 
 ### std::mutex is not used around a call to pipe()
 
