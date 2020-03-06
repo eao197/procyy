@@ -799,7 +799,9 @@ class pipe_streambuf : public pipe_ostreambuf
                 }
                 catch(...)
                 {
-                    rc = std::make_error_code(std::io_errc::stream);
+                    // gcc-4.8 doesn't have std::io_errc so use
+                    // different error code.
+                    rc = std::make_error_code(std::errc::io_error);
                 }
             }
         }
