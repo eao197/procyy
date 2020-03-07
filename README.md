@@ -58,6 +58,20 @@ cat.limit(limits);
 (cat | wc).exec();
 ```
 
+## A note about SIGPIPE signal
+
+When the parent process interacts with a child via pipes there can be a case of
+reading/writing from/to closed pipe. For example, the parent tries to write
+another portion of data to the standard input stream of a child process, but
+the child is already died.
+
+Unix sends SIGPIPE signal in that case. And the default reaction to that
+signal is the termination of the application.
+
+It's important to note that procyy doesn't install SIGPIPE handlers.
+So it's a task of an application to install an appropriate SIGPIPE
+handler before the use of procyy.
+
 # Differences from the original procxx
 
 ## procyy namespace instead of procxx namespace
@@ -224,3 +238,9 @@ of pipe descriptors if another thread performs `fork`+`execvp`.
 So I think this mutex is just useless. And because of that the constructor if
 `procyy::pipe_t` doesn't use a lock of a mutex around calls to `pipe`+`fcntl`.
 
+## procyy doesn't use perror
+
+The procxx library uses `perror` in several places for error logging. It leads to
+messages like "Broken pipe" on the standard error stream of your application.
+
+The procyy library doesn't use `perror` at all.
