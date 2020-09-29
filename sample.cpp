@@ -2,11 +2,10 @@
 
 #include <iostream>
 
-int main()
+// An instance of `process` can be passed by value
+// (due to move constructor/operator of `process` class).
+static void handle_running_ping(procyy::process ping)
 {
-    procyy::process ping( "ping", "www.google.com", "-c", "2" );
-    ping.exec();
-
     std::string line;
     while( std::getline( ping.output(), line ) )
     {
@@ -20,6 +19,14 @@ int main()
 
     ping.wait();
     std::cout << "exit code: " << ping.code() << std::endl;
+}
+
+int main()
+{
+    procyy::process ping( "ping", "www.google.com", "-c", "2" );
+    ping.exec();
+
+    handle_running_ping( std::move(ping) );
 
     return 0;
 }

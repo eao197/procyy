@@ -26,6 +26,7 @@
 #include <functional>
 #include <istream>
 #include <ostream>
+#include <memory>
 #include <stdexcept>
 #include <streambuf>
 #include <string>
@@ -859,10 +860,7 @@ public:
      */
     template <class... Args>
     process(std::string application, Args&&... args)
-        : args_{std::move(application), std::forward<Args>(args)...},
-          in_stream_{&pipe_buf_},
-          out_stream_{&pipe_buf_},
-          err_stream_{&err_buf_}
+        : impl_{new data{std::move(application), std::forward<Args>(args)...}}
     {
         // nothing
     }
@@ -871,7 +869,7 @@ public:
      * Adds an argument to the argument-list
      */
     void add_argument(std::string arg) {
-        args_.push_back(std::move(arg));
+        impl_->args_.push_back(std::move(arg));
     }
 
     /**
@@ -879,7 +877,7 @@ public:
      */
     template<typename InputIterator>
     void append_arguments(InputIterator first, InputIterator last) {
-        args_.emplace(args_.end(), first, last);
+        impl_->args_.emplace(impl_->args_.end(), first, last);
     }
 
     /**
@@ -889,7 +887,7 @@ public:
     void
     read_from(process& other) noexcept
     {
-        read_from_ = &other;
+        impl_->read_from_ = &other;
     }
 
     /**
@@ -922,7 +920,7 @@ public:
     void
     exec(Hook && post_fork_hook)
     {
-        if (pid_ != -1)
+        if (impl_->pid_ != -1)
             throw exception{"process already started"};
 
         pipe_t err_pipe;
@@ -943,7 +941,7 @@ public:
             // It marks the `process` object as `started`. And that allows
             // to wait for the child process, check its status, kill it
             // and so on.
-            pid_ = pid;
+            impl_->pid_ = pid;
 
             on_exec_in_parent(std::forward<Hook>(post_fork_hook), err_pipe);
         }
@@ -963,10 +961,14 @@ public:
      */
     process(process&&) = default;
 
+    process & operator=(process&&) = default;
+
     /**
      * Process handles are unique: they may not be copied.
      */
     process(const process&) = delete;
+
+    process & operator=(const process&) = delete;
 
     /**
      * The destructor for a process will wait for the child if client code
@@ -974,7 +976,11 @@ public:
      */
     ~process()
     {
-        (void)wait(nothrow{});
+        // Since 20200929 the `process` instance can be in 'invalid' state
+        // after the move. So the ability to call `wait()` has to be
+        // checked explicitly.
+        if(impl_)
+            (void)wait(nothrow{});
     }
 
     /**
@@ -984,7 +990,7 @@ public:
     pid_t
     id() const noexcept
     {
-        return pid_;
+        return impl_->pid_;
     }
 
     /**
@@ -1046,7 +1052,7 @@ public:
     void
     limit(const limits_t& limits)
     {
-        limits_ = limits;
+        impl_->limits_ = limits;
     }
 
     /**
@@ -1057,22 +1063,22 @@ public:
     wait(nothrow) noexcept
     {
         std::error_code rc{};
-        if (!waited_)
+        if (!impl_->waited_)
         {
             rc = details::run_as_sequence(
-                    [&]{ return pipe_buf_.close(
+                    [&]{ return impl_->pipe_buf_.close(
                             nothrow{}, pipe_t::write_end()); },
-                    [&]{ return err_buf_.close(
+                    [&]{ return impl_->err_buf_.close(
                             nothrow{}, pipe_t::write_end()); },
                     [&]{
-                        const auto r = waitpid(pid_, &status_, 0);
+                        const auto r = waitpid(impl_->pid_, &(impl_->status_), 0);
                         return -1 == r ?
                                 details::error_code_from_errno(errno) :
                                 std::error_code{};
                     } );
 
-            pid_ = -1;
-            waited_ = true;
+            impl_->pid_ = -1;
+            impl_->waited_ = true;
         }
  
         return rc;
@@ -1096,7 +1102,7 @@ public:
     bool
     waited() const noexcept
     {
-        return waited_;
+        return impl_->waited_;
     }
 
     /**
@@ -1122,10 +1128,10 @@ public:
     running()
     {
         const auto r = details::is_running(id(), [this](int status) {
-                status_ = status;
-                pid_ = -1;
-                waited_ = true;
-                });
+                impl_->status_ = status;
+                impl_->pid_ = -1;
+                impl_->waited_ = true;
+            });
         if(r.first)
             throw exception("Failed to check process state: "
                     + r.first.message());
@@ -1139,9 +1145,9 @@ public:
     bool
     exited() const
     {
-        if (!waited_)
+        if (!impl_->waited_)
             throw exception{"process::wait() not yet called"};
-        return WIFEXITED(status_);
+        return WIFEXITED(impl_->status_);
     }
 
     /**
@@ -1151,9 +1157,9 @@ public:
     bool
     killed() const
     {
-        if (!waited_)
+        if (!impl_->waited_)
             throw exception{"process::wait() not yet called"};
-        return WIFSIGNALED(status_);
+        return WIFSIGNALED(impl_->status_);
     }
 
     /**
@@ -1163,9 +1169,9 @@ public:
     bool
     stopped() const
     {
-        if (!waited_)
+        if (!impl_->waited_)
             throw exception{"process::wait() not yet called"};
-        return WIFSTOPPED(status_);
+        return WIFSTOPPED(impl_->status_);
     }
 
     /**
@@ -1176,14 +1182,14 @@ public:
     int
     code() const
     {
-        if (!waited_)
+        if (!impl_->waited_)
             throw exception{"process::wait() not yet called"};
         if (exited())
-            return WEXITSTATUS(status_);
+            return WEXITSTATUS(impl_->status_);
         if (killed())
-            return WTERMSIG(status_);
+            return WTERMSIG(impl_->status_);
         if (stopped())
-            return WSTOPSIG(status_);
+            return WSTOPSIG(impl_->status_);
         return -1;
     }
 
@@ -1195,8 +1201,8 @@ public:
     close(nothrow nothr, pipe_t::pipe_end end) noexcept
     {
         return details::run_as_sequence(
-                [&]{ return pipe_buf_.close(nothr, end); },
-                [&]{ return err_buf_.close(nothr, end); });
+                [&]{ return impl_->pipe_buf_.close(nothr, end); },
+                [&]{ return impl_->err_buf_.close(nothr, end); });
     }
 
     /**
@@ -1216,7 +1222,7 @@ public:
     template <class T>
     friend std::ostream& operator<<(process& proc, T&& input)
     {
-        return proc.in_stream_ << input;
+        return proc.impl_->in_stream_ << input;
     }
 
     /**
@@ -1226,7 +1232,7 @@ public:
     std::ostream&
     input() noexcept
     {
-        return in_stream_;
+        return impl_->in_stream_;
     }
 
     /**
@@ -1236,7 +1242,7 @@ public:
     std::istream&
     output() noexcept
     {
-        return out_stream_;
+        return impl_->out_stream_;
     }
 
     /**
@@ -1246,7 +1252,7 @@ public:
     std::istream&
     error() noexcept
     {
-        return err_stream_;
+        return impl_->err_stream_;
     }
 
     /**
@@ -1255,7 +1261,7 @@ public:
     template <class T>
     friend std::istream& operator>>(process& proc, T& output)
     {
-        return proc.out_stream_ >> output;
+        return proc.impl_->out_stream_ >> output;
     }
 
     /**
@@ -1272,9 +1278,9 @@ public:
     void
     recursive_close_stdin(nothrow nothr) noexcept
     {
-        (void)pipe_buf_.stdin_pipe().close(nothr);
-        if (read_from_)
-            read_from_->recursive_close_stdin(nothr);
+        (void)impl_->pipe_buf_.stdin_pipe().close(nothr);
+        if (impl_->read_from_)
+            impl_->read_from_->recursive_close_stdin(nothr);
     }
 
     template<typename Hook>
@@ -1292,7 +1298,7 @@ public:
 
             close_pipes_in_child(err_pipe);
 
-            limits_.set_limits();
+            impl_->limits_.set_limits();
 
             auto args = make_args_vector_for_execvp();
             execvp(args[0], args.data());
@@ -1318,24 +1324,24 @@ public:
         pipe_t & err_pipe)
     {
         err_pipe.close(pipe_t::read_end());
-        pipe_buf_.stdin_pipe().close(pipe_t::write_end());
-        pipe_buf_.stdout_pipe().close(pipe_t::read_end());
-        pipe_buf_.stdout_pipe().dup(pipe_t::write_end(), STDOUT_FILENO);
-        err_buf_.stdout_pipe().close(pipe_t::read_end());
-        err_buf_.stdout_pipe().dup(pipe_t::write_end(), STDERR_FILENO);
+        impl_->pipe_buf_.stdin_pipe().close(pipe_t::write_end());
+        impl_->pipe_buf_.stdout_pipe().close(pipe_t::read_end());
+        impl_->pipe_buf_.stdout_pipe().dup(pipe_t::write_end(), STDOUT_FILENO);
+        impl_->err_buf_.stdout_pipe().close(pipe_t::read_end());
+        impl_->err_buf_.stdout_pipe().dup(pipe_t::write_end(), STDERR_FILENO);
 
-        if (read_from_)
+        if (impl_->read_from_)
         {
             // NOTE: recursive_close_stdin has no throwing version.
-            read_from_->recursive_close_stdin(nothrow{});
+            impl_->read_from_->recursive_close_stdin(nothrow{});
 
-            pipe_buf_.stdin_pipe().close(pipe_t::read_end());
-            read_from_->pipe_buf_.stdout_pipe().dup(
+            impl_->pipe_buf_.stdin_pipe().close(pipe_t::read_end());
+            impl_->read_from_->impl_->pipe_buf_.stdout_pipe().dup(
                     pipe_t::read_end(), STDIN_FILENO);
         }
         else
         {
-            pipe_buf_.stdin_pipe().dup(pipe_t::read_end(), STDIN_FILENO);
+            impl_->pipe_buf_.stdin_pipe().dup(pipe_t::read_end(), STDIN_FILENO);
         }
     }
 
@@ -1343,8 +1349,8 @@ public:
     make_args_vector_for_execvp() const
     {
         std::vector<char*> args;
-        args.reserve(args_.size() + 1);
-        for (auto& arg : args_)
+        args.reserve(impl_->args_.size() + 1);
+        for (auto& arg : impl_->args_)
             args.push_back(const_cast<char*>(arg.c_str()));
         args.push_back(nullptr);
 
@@ -1463,31 +1469,50 @@ public:
         // are actual for controlling the running child.
         //
         (void)err_pipe.close(nothrow{}, pipe_t::write_end());
-        (void)pipe_buf_.stdout_pipe().close(nothrow{}, pipe_t::write_end());
-        (void)err_buf_.stdout_pipe().close(nothrow{}, pipe_t::write_end());
-        (void)pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::read_end());
-        if (read_from_)
+        (void)impl_->pipe_buf_.stdout_pipe().close(nothrow{}, pipe_t::write_end());
+        (void)impl_->err_buf_.stdout_pipe().close(nothrow{}, pipe_t::write_end());
+        (void)impl_->pipe_buf_.stdin_pipe().close(nothrow{}, pipe_t::read_end());
+        if (impl_->read_from_)
         {
-            (void)pipe_buf_.stdin_pipe().close(
+            (void)impl_->pipe_buf_.stdin_pipe().close(
                     nothrow{}, pipe_t::write_end());
-            (void)read_from_->pipe_buf_.stdout_pipe().close(
+            (void)impl_->read_from_->impl_->pipe_buf_.stdout_pipe().close(
                     nothrow{}, pipe_t::read_end());
-            (void)read_from_->err_buf_.stdout_pipe().close(
+            (void)impl_->read_from_->impl_->err_buf_.stdout_pipe().close(
                     nothrow{}, pipe_t::read_end());
         }
     }
 
-    std::vector<std::string> args_;
-    process* read_from_ = nullptr;
-    limits_t limits_;
-    pid_t pid_ = -1;
-    pipe_streambuf pipe_buf_;
-    pipe_ostreambuf err_buf_;
-    std::ostream in_stream_;
-    std::istream out_stream_;
-    std::istream err_stream_;
-    bool waited_ = false;
-    int status_;
+    // Since 20200929 PImpl idiom is used for `process` class.
+    // It allows to implement move constructor and move operator
+    // for `process` class.
+    //
+    // This struct contains an internal data for `process` instance.
+    struct data
+    {
+        template<typename... Args>
+        data(std::string application, Args &&... args)
+            : args_{std::move(application), std::forward<Args>(args)...},
+              in_stream_{&pipe_buf_},
+              out_stream_{&pipe_buf_},
+              err_stream_{&err_buf_}
+        {}
+
+        std::vector<std::string> args_;
+        process* read_from_ = nullptr;
+        limits_t limits_;
+        pid_t pid_ = -1;
+        pipe_streambuf pipe_buf_;
+        pipe_ostreambuf err_buf_;
+        std::ostream in_stream_;
+        std::istream out_stream_;
+        std::istream err_stream_;
+        bool waited_ = false;
+        int status_;
+    };
+
+    // Internal data for an instance of `process` class.
+    std::unique_ptr<data> impl_;
 };
 
 /**
