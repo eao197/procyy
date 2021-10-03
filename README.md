@@ -244,3 +244,20 @@ The procxx library uses `perror` in several places for error logging. It leads t
 messages like "Broken pipe" on the standard error stream of your application.
 
 The procyy library doesn't use `perror` at all.
+
+## Since 20211003 there is no process::append_arguments method
+
+It seemed that the old process::append_arguments worked not as expected by an ordinary user. That method constructed just one argument and initialized that argument with the help of two iterators (`first` and `last`).
+
+Method `process::append_arguments` was removed in 20211003. Since then, there have been two new methods:
+
+```cpp
+// Adds just one argument and initilizes it via `args`.
+template< typename... Args >
+void emplace_argument(Args && ...args);
+
+// Adds several arguments.
+template< typename ForwardIterator >
+void add_some_arguments(ForwardIterator first, ForwardIterator last);
+```
+
