@@ -873,11 +873,41 @@ public:
     }
 
     /**
+     * Adds an argument to the argument-list.
+     *
+     * New argument is constructed via std::vector::emplace_back
+     * with forwarding of all @a args to it.
+     *
+     * Usage example:
+     * @code
+     * procyy::process child{ ... };
+     * ...
+     * std::string string_with_leading_spaces{ ... };
+     * auto it = string_with_leading_spaces.begin() +
+     *     string_with_leading_spaces.find_first_not_of( " \r\n\t" );
+     * child.emplace_argument(it, string_with_leading_spaces.end());
+     * @endcode
+     */
+    template< typename... Args >
+    void emplace_argument(Args && ...args) {
+        impl_->args_.emplace_back(std::forward<Args>(args)...);
+    }
+
+    /**
      * Add further arguments to the argument-list
+     *
+     * Usage example:
+     * @code
+     * procyy::process child{ ... };
+     * ...
+     * std::list<std::string> additional_args{ "--ip", "127.0.0.1", "-v" };
+     * child.add_some_arguments(additional_args.begin(), additional_args.end());
+     * @endcode
      */
     template<typename InputIterator>
-    void append_arguments(InputIterator first, InputIterator last) {
-        impl_->args_.emplace(impl_->args_.end(), first, last);
+    void add_some_arguments(InputIterator first, InputIterator last) {
+        for(; first != last; ++first )
+            impl_->args_.push_back( *first );
     }
 
     /**
